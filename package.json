@@ -24,7 +24,7 @@
     "build": "rm -rf dist && tsc -p tsconfig.build.json && node scripts/check-dist.mjs",
     "prepack": "npm run build",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "check:private-words": "node scripts/private-words.mjs",
     "check": "npm run typecheck && npm test && npm run build && npm run check:private-words && npm run check:comment-dates && npm run check:consumer",
     "check:comment-dates": "node scripts/check-comment-dates.mjs",
