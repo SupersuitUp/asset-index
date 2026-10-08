@@ -47,13 +47,63 @@ export async function search<M extends string>(host: AssetIndexHost<M>, who: M, 
   return hits
 }
 
+export type IndexOutcome = 'indexed' | 'failed' | 'forgotten'
+
+// An asset that could not even be read is recorded as a failed entry, so the retry sweep picks it
+// up rather than nobody noticing. A failed entry is never returned by search (no embedding, no
+// terms, and search keeps only status 'indexed'), so its fields only have to be good enough to
+// retry: the last known ones when there are any. The get and put are not atomic, and both ways
+// they can interleave fail closed: a good entry overwritten is hidden until the retry re-indexes
+// it, and a just-forgotten one re-created as failed is forgotten again when the retry finds it gone.
+async function recordFailure<M extends string>(host: AssetIndexHost<M>, id: string, err: unknown): Promise<'failed'> {
+  host.log?.(`asset-index: could not load ${id}`, err)
+  const prior = await host.store.get(id).catch(() => null)
+  const at = now()
+  await host.store.put({
+    id, kind: prior?.kind ?? 'photo', status: 'failed',
+    error: `load failed: ${String((err as Error)?.message ?? err)}`.slice(0, 300),
+    caption: '', tags: [], visibleText: '', terms: [], embedding: null,
+    takenAt: prior?.takenAt ?? at, href: prior?.href ?? '', thumbPath: null,
+    visibleTo: prior?.visibleTo ?? [], indexedAt: at,
+  })
+  return 'failed'
+}
+
+const visibility = (a: AssetInput) => [...new Set(a.visibleTo)].sort().join('\n')
+
+/**
+ * Index one asset by id. The call a host makes from its finalize hook, and the one every sweep
+ * makes. Describing takes seconds, and in that window the app can hide, delete or narrow the asset
+ * and run its own forget, which a slower put would undo for good. So after the put the asset is read
+ * again: gone means forget, a different visibleTo means index once more, and a third read that still
+ * disagrees records a failed entry (never searchable) for the retry sweep to settle. A load that
+ * throws records a failed entry too. Never leaves an entry wider than the asset now is.
+ */
+export async function indexById<M extends string>(host: AssetIndexHost<M>, id: string): Promise<IndexOutcome> {
+  let a: AssetInput | null
+  try { a = await host.load(id) } catch (err) { return recordFailure(host, id, err) }
+  for (let attempt = 0; ; attempt++) {
+    if (!a) { await forgetAsset(host, id); return 'forgotten' }
+    const entry = await indexAsset(host, a)
+    let current: AssetInput | null
+    try { current = await host.load(id) } catch (err) { return recordFailure(host, id, err) }
+    if (current && visibility(current) === visibility(a)) return entry.status
+    if (current && attempt === 1) return recordFailure(host, id, new Error('visibility kept changing while it was indexed'))
+    a = current
+  }
+}
+
+/**
+ * Without backfill, retries failed entries oldest first; with it, indexes one page of listAll,
+ * skipping what is already indexed. Every id goes through indexById, each caught on its own, so
+ * one asset that throws is counted failed and never ends the run. A forgotten id counts as skipped.
+ */
 export async function sweep<M extends string>(host: AssetIndexHost<M>, opts: { cursor: string | null; limit: number; backfill: boolean }) {
   let indexed = 0, failed = 0, skipped = 0
   const run = async (id: string) => {
-    const a = await host.load(id)
-    if (!a) { await host.store.delete(id); skipped++; return }
-    const e = await indexAsset(host, a)
-    if (e.status === 'indexed') indexed++; else failed++
+    let o: IndexOutcome
+    try { o = await indexById(host, id) } catch (err) { host.log?.(`asset-index: sweep of ${id} failed`, err); o = 'failed' }
+    if (o === 'indexed') indexed++; else if (o === 'failed') failed++; else skipped++
   }
   if (!opts.backfill) {
     for (const e of await host.store.failed(opts.limit)) await run(e.id)
@@ -61,7 +111,8 @@ export async function sweep<M extends string>(host: AssetIndexHost<M>, opts: { c
   }
   const page = await host.listAll(opts.cursor, opts.limit)
   for (const id of page.ids) {
-    const existing = await host.store.get(id)
+    let existing: IndexEntry | null
+    try { existing = await host.store.get(id) } catch (err) { host.log?.(`asset-index: sweep of ${id} failed`, err); failed++; continue }
     if (existing?.status === 'indexed') { skipped++; continue }
     await run(id)
   }

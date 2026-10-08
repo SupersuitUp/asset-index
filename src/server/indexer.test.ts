@@ -84,7 +84,8 @@ it('with limit 1 and two failing entries, the second retry sweep picks the other
   await sweep(spy, { cursor: null, limit: 1, backfill: false })
   await new Promise((r) => setTimeout(r, 5))
   await sweep(spy, { cursor: null, limit: 1, backfill: false })
-  expect(seen).toEqual(['1', '2'])
+  // Each id is read twice: once to index it, once after the put to confirm it did not change.
+  expect(seen).toEqual(['1', '1', '2', '2'])
 })
 
 it('forgetAsset removes an indexed asset from search and the store', async () => {

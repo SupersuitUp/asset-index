@@ -32,14 +32,14 @@ npm install @supersuit/asset-index firebase-admin @google/genai
 - `@supersuit/asset-index`: the types and the pure rules, safe anywhere (`AssetInput`,
   `IndexEntry`, `SearchHit`, `Description`, `AssetKind`, `EMBED_DIMENSIONS`,
   `DEFAULT_DESCRIBE_MODEL`, `DEFAULT_EMBED_MODEL`).
-- `@supersuit/asset-index/server`: `indexAsset`, `forgetAsset`, `search`, `sweep`, `assetSearchHandlers`,
-  `firestoreStore`, `memoryStore`, `geminiModel`, and the `AssetIndexHost`, `IndexStore` and
-  `Model` types. Server only: it imports `server-only`, so a client bundle that reaches it fails to
+- `@supersuit/asset-index/server`: `indexById`, `indexAsset`, `forgetAsset`, `search`, `sweep`, `assetSearchHandlers`,
+  `firestoreStore`, `memoryStore`, `geminiModel`, and the `AssetIndexHost`, `IndexStore`,
+  `Model` and `IndexOutcome` types. Server only: it imports `server-only`, so a client bundle that reaches it fails to
   build.
 
 ```ts
 import type { AssetInput, SearchHit } from '@supersuit/asset-index'
-import { indexAsset, firestoreStore, geminiModel } from '@supersuit/asset-index/server'
+import { indexById, firestoreStore, geminiModel } from '@supersuit/asset-index/server'
 ```
 
 ## The host
@@ -54,7 +54,7 @@ export interface AssetIndexHost<M extends string> {
   store: IndexStore
   model: Model
   signedUrl(path: string): Promise<string>
-  /** Re-reads an asset for retry/backfill; null if it no longer exists. */
+  /** Reads one asset as it is now; null if it no longer exists or must not be searchable. */
   load(id: string): Promise<AssetInput | null>
   /** Ids of every asset the app holds, for backfill. Paged by cursor. */
   listAll(cursor: string | null, limit: number): Promise<{ ids: string[]; next: string | null }>
@@ -71,7 +71,9 @@ export interface AssetIndexHost<M extends string> {
   `memoryStore()` for tests.
 - `model`: `geminiModel(apiKey)` for production.
 - `signedUrl(path)`: turns a stored thumbnail path into a URL, at search time.
-- `load(id)`: re-reads one asset as an `AssetInput`, or `null` once it is gone. A failed entry whose asset is gone is
+- `load(id)`: reads one asset as it is right now, as an `AssetInput`, or `null` once it is gone or
+  must not be searchable (hidden, emptied). `indexById` calls it before and after every write, so it
+  has to answer the current truth, never a cached copy. A throw is recorded as a failed entry. A failed entry whose asset is gone is
   removed on the next retry sweep; a deleted asset's entry is removed by `forgetAsset`.
 - `listAll(cursor, limit)`: one page of every asset id the app holds, for backfill.
 - `log(message, err)`: optional. Where indexing failures are reported.
@@ -98,18 +100,34 @@ export const host: AssetIndexHost<MemberId> = {
 }
 ```
 
-2. Right after the step that finalizes an upload, index it with `after`, so indexing never blocks
-   the upload and a failure never fails it.
+2. Right after the step that finalizes an upload, and after any change to what an asset says or who
+   may see it, index it by id with `after`, so indexing never blocks the request and a failure
+   never fails it.
 
 ```ts
 import { after } from 'next/server'
-import { indexAsset } from '@supersuit/asset-index/server'
+import { indexById } from '@supersuit/asset-index/server'
 
 // inside the finalize route, once the asset is saved
-after(() => indexAsset(host, input))
+after(() => indexById(host, id))
 ```
 
-`input` is an `AssetInput`: the id, the kind (`photo`, `video`, `voice` or `text`), a display-size
+`indexById` reads the asset through `host.load`, indexes it, and answers `'indexed'`, `'failed'` or
+`'forgotten'`. `indexAsset(host, input)` is still exported as the low-level call that indexes an
+`AssetInput` you already hold, once, with no re-read; prefer `indexById` from finalize hooks.
+
+### Why indexById re-reads
+
+Describing an asset takes seconds. If the app hides it, deletes it or narrows who may see it in that
+window (a note unshared), the app's own forget or re-index can finish first, and a plain put landing
+afterwards writes the old, wider entry back, where nothing ever corrects it. So after its put,
+`indexById` reads the asset again: gone means the entry is forgotten, a different `visibleTo`
+(compared as a set) means it is indexed once more, and a third read that still disagrees records a
+failed entry for the retry sweep to settle. A `load` that throws is also recorded as failed, so it is
+retried instead of silently never indexed. A failed entry is never returned by search. The sweep and
+the `POST` handler go through `indexById` for every id, so they get the same protection.
+
+An `AssetInput` is the id, the kind (`photo`, `video`, `voice` or `text`), a display-size
 JPEG or poster frame in `image` and/or the transcript or body in `text`, `takenAt`, an app-relative
 `href`, the thumbnail's storage path, and `visibleTo` (an empty array means every member).
 
@@ -139,7 +157,8 @@ curl -X POST https://your.app/api/asset-search \
 How the agent key is presented is the app's choice: `agentMember` reads whatever header the app
 uses. A backfill skips assets that are already indexed, so it is safe to run again.
 
-6. When an asset is deleted, call `forgetAsset(host, id)` in the same delete path.
+6. When an asset is deleted, call `forgetAsset(host, id)` in the same delete path. When it is
+   hidden or its visibility changes, `indexById(host, id)` settles the entry either way.
 
 ## Environment
 
@@ -185,8 +204,11 @@ gcloud firestore indexes composite create --project=<P> --collection-group=<COLL
   used to read what the model said about a photo someone else can see.
 - **People come only from `host.people()`.** The describing model is given the names the app
   supplies and nothing else, so a caption never names someone the app did not say is there.
+- **An entry is never wider than the asset now is.** `indexById` re-reads after every write (see
+  above), and a sweep that hits an asset it cannot read records it failed and carries on with the
+  rest of the page.
 - **An index failure never fails an upload.** `indexAsset` catches every describe and embed error and records a failed entry. If the store
-  itself is down, `indexAsset` rejects, which is why it runs inside `after()` and never on the upload
+  itself is down, `indexAsset` and `indexById` reject, which is why it runs inside `after()` and never on the upload
   path. The hourly sweep retries failed entries.
 - **Visibility is enforced at search.** An entry with a non-empty `visibleTo` is returned only to
   the people listed.

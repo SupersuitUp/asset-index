@@ -1,6 +1,6 @@
 {
   "name": "@supersuit/asset-index",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Find anything uploaded to an app by describing it: captions, tags and embeddings written at upload, searched by meaning and by word.",
   "type": "module",
   "exports": {

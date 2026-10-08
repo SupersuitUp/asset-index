@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.1
+
+2026-10-08
+
+- `indexById(host, id)`: the call to make from a finalize hook. It loads the asset, indexes it, then
+  reads it again: an asset hidden or deleted while it was being described is forgotten, a narrowed
+  `visibleTo` is indexed once more, and visibility that still disagrees on a third read is recorded
+  failed. Answers `'indexed'`, `'failed'` or `'forgotten'` (`IndexOutcome`). Before this, a hide,
+  delete or unshare landing during describe left a stale, wider entry in search for good.
+- A `host.load` that throws is now recorded as a failed entry (never searchable), so the retry sweep
+  picks it up instead of it never being indexed.
+- `sweep` sends every id through `indexById`, each caught on its own, so one asset that throws is
+  counted failed and no longer aborts the run; a retry that still cannot read an id keeps its failed
+  entry. Forgotten ids count as skipped. Same options and same answer.
+- `assetSearchHandlers` `POST` inherits all of this through `sweep`; its contract is unchanged.
+- `indexAsset` is unchanged and still exported as the low-level call.
+- Each id in a sweep is now read twice (before and after its put).
+
 ## 0.1.0
 
 2026-10-07

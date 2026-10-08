@@ -1,6 +1,7 @@
 import 'server-only'
 
-export { indexAsset, forgetAsset, search, sweep } from './indexer.js'
+export { indexAsset, indexById, forgetAsset, search, sweep } from './indexer.js'
+export type { IndexOutcome } from './indexer.js'
 export { assetSearchHandlers } from './handlers.js'
 export { firestoreStore } from './store.js'
 export type { IndexStore } from './store.js'
