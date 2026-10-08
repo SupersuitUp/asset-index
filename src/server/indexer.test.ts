@@ -124,23 +124,75 @@ it('a throwing or null present still returns the hit, untitled', async () => {
   expect(hits.map((x) => x.id).sort()).toEqual(['1', '2'])
   for (const x of hits) { expect(x).not.toHaveProperty('title'); expect(x).not.toHaveProperty('snippet') }
 })
-it('present title is trimmed and capped at 120; snippet collapses whitespace and ends in an ellipsis when cut', async () => {
+it('title is trimmed, cut at 120 with an ellipsis, and ranges past the cut are dropped', async () => {
   const xs = [asset('1', 'beach')]
-  const long = 'word '.repeat(80)
-  const h = { ...hostWith(fake(), xs), present: async () => ({ title: `   ${'t'.repeat(200)}  `, snippet: `  ${long}  ` }) }
+  const title = `  beach ${'t'.repeat(150)} beach  `
+  const h = { ...hostWith(fake(), xs), present: async () => ({ title }) }
   await indexAll(h, xs)
   const [hit] = await search(h, 'g', 'beach')
-  expect(hit.title).toBe('t'.repeat(120))
-  expect(hit.snippet!.length).toBeLessThanOrEqual(160)
-  expect(hit.snippet!.endsWith('…')).toBe(true)
-  expect(hit.snippet).not.toMatch(/\s{2}/)
+  expect(hit.title!.length).toBe(120)
+  expect(hit.title!.endsWith('…')).toBe(true)
+  expect(hit.titleMatches).toEqual([[0, 5]])
+  for (const [s, e] of hit.titleMatches!) expect(e).toBeLessThanOrEqual(hit.title!.length)
 })
-it('snippet collapses whitespace and is left whole when short', async () => {
+it('snippet is a window around a mid-text match, with ellipses and whitespace collapsed', async () => {
   const xs = [asset('1', 'beach')]
-  const h = { ...hostWith(fake(), xs), present: async () => ({ title: ' Poem ', snippet: 'a\n\n  b\t c ' }) }
+  const text = `${'alpha '.repeat(60)}\n\n  the   beach  is  here ${'omega '.repeat(60)}`
+  const h = { ...hostWith(fake(), xs), present: async () => ({ text }) }
   await indexAll(h, xs)
   const [hit] = await search(h, 'g', 'beach')
-  expect(hit).toMatchObject({ title: 'Poem', snippet: 'a b c' })
+  const sn = hit.snippet!
+  expect(sn.length).toBeLessThanOrEqual(160)
+  expect(sn.startsWith('…')).toBe(true)
+  expect(sn.endsWith('…')).toBe(true)
+  expect(sn).toContain('the beach is here')
+  expect(sn).not.toMatch(/\s{2}/)
+  expect(sn.startsWith('… ')).toBe(false)
+  expect(hit.snippetMatches).toHaveLength(1)
+  const [s, e] = hit.snippetMatches![0]
+  expect(sn.slice(s, e)).toBe('beach')
+})
+it('a query term matches word prefixes, so love finds loved, and ranges never overlap', async () => {
+  const xs = [asset('1', 'beach love')]
+  const text = 'I loved her. Love is love, and so on. Unloved is not a match.'
+  const h = { ...hostWith(fake(), xs), present: async () => ({ title: 'Love and beach: loved', text }) }
+  await indexAll(h, xs)
+  const [hit] = await search(h, 'g', 'love')
+  expect(hit.snippetMatches!.map(([s, e]) => hit.snippet!.slice(s, e))).toEqual(['loved', 'Love', 'love'])
+  expect(hit.titleMatches!.map(([s, e]) => hit.title!.slice(s, e))).toEqual(['Love', 'loved'])
+  const r = hit.snippetMatches!
+  for (let i = 1; i < r.length; i++) expect(r[i][0]).toBeGreaterThanOrEqual(r[i - 1][1])
+})
+it('a meaning-only match gives the first 160 characters and no ranges', async () => {
+  const xs = [asset('1', 'beach')]
+  const text = 'sea '.repeat(100)
+  const h = { ...hostWith(fake(), xs), present: async () => ({ text }) }
+  await indexAll(h, xs)
+  const [hit] = await search(h, 'g', 'beach')
+  expect(hit.snippet!.length).toBeLessThanOrEqual(160)
+  expect(hit.snippet!.length).toBeGreaterThan(150)
+  expect(hit.snippet!.startsWith('sea sea')).toBe(true)
+  expect(hit.snippet!.endsWith('…')).toBe(true)
+  expect(hit).not.toHaveProperty('snippetMatches')
+})
+it('non-Latin terms get offsets that are JS string indices (Ethiopic, after an astral character)', async () => {
+  const text = `😀 ሰላም ለሁሉም ፍቅር ነው ${'ሰላም '.repeat(5)}`
+  const xs = [asset('1', 'ፍቅር')]
+  const h = { ...hostWith(fake(), xs), present: async () => ({ title: 'ፍቅር ግጥም', text }) }
+  await indexAll(h, xs)
+  const [hit] = await search(h, 'g', 'ፍቅር')
+  expect(hit.snippetMatches!.map(([s, e]) => hit.snippet!.slice(s, e))).toEqual(['ፍቅር'])
+  expect(hit.snippetMatches![0][0]).toBe(hit.snippet!.indexOf('ፍቅር'))
+  expect(hit.titleMatches).toEqual([[0, 3]])
+})
+it('a present that takes longer than 1500 ms leaves the hit untitled', async () => {
+  const xs = [asset('1', 'beach')]
+  const h = { ...hostWith(fake(), xs), present: () => new Promise<null>(() => {}) }
+  await indexAll(h, xs)
+  const hits = await search(h, 'g', 'beach')
+  expect(hits).toHaveLength(1)
+  expect(hits[0]).not.toHaveProperty('title')
+  expect(hits[0]).not.toHaveProperty('snippet')
 })
 it('without present, hits carry no title fields', async () => {
   const xs = [asset('1', 'beach')]

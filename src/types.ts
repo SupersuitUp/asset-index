@@ -52,8 +52,12 @@ export interface SearchHit {
   href: string
   thumbUrl: string | null
   score: number
-  /** The asset's own human-written title, from `host.present`; max 120 chars. */
+  /** The asset's own human-written title, from `host.present`; max 120 chars, ending in "…" if cut. */
   title?: string
-  /** A short excerpt of the asset's own words, from `host.present`; max 160 chars. */
+  /** `[start, end)` JS string indices into `title`, one per query-term word. Sorted, non-overlapping. Absent when nothing matched. */
+  titleMatches?: [number, number][]
+  /** About 160 characters of the asset's own words, centered on the first query-term match, built by the package from `present().text`. */
   snippet?: string
+  /** `[start, end)` JS string indices into `snippet`, same rules as `titleMatches`. Never HTML: the UI escapes the text and wraps only these ranges. */
+  snippetMatches?: [number, number][]
 }

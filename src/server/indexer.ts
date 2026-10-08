@@ -1,4 +1,5 @@
 import { describePrompt, parseDescription, terms, fuse } from '../core.js'
+import { buildSnippet, buildTitle } from '../snippet.js'
 import type { AssetInput, IndexEntry, SearchHit } from '../types.js'
 import type { AssetIndexHost } from './host.js'
 
@@ -44,6 +45,7 @@ export async function search<M extends string>(host: AssetIndexHost<M>, who: M, 
     picked.push(e)
     if (picked.length === limit) break
   }
+  const qt = terms(query)
   const score = new Map(ranked.map((r) => [r.id, r.score]))
   const hits: SearchHit[] = await Promise.all(picked.map(async (e) => {
     const hit: SearchHit = {
@@ -53,28 +55,30 @@ export async function search<M extends string>(host: AssetIndexHost<M>, who: M, 
     // Only the final hits reach here, after visibility filtering. HARD RULE: whatever present
     // returns must be the asset's own human-written words. This function never copies the entry's
     // caption, tags or visibleText onto a hit; those are never shown to people.
-    const shown = await presentOne(host, e)
-    if (shown.title) hit.title = shown.title
-    if (shown.snippet) hit.snippet = shown.snippet
-    return hit
+    return Object.assign(hit, await presentOne(host, e, qt))
   }))
   return hits
 }
 
-const TITLE_MAX = 120
-const SNIPPET_MAX = 160
+const PRESENT_TIMEOUT_MS = 1500
 
-async function presentOne<M extends string>(host: AssetIndexHost<M>, e: IndexEntry): Promise<{ title?: string; snippet?: string }> {
+async function presentOne<M extends string>(host: AssetIndexHost<M>, e: IndexEntry, qt: string[]): Promise<Partial<Pick<SearchHit, 'title' | 'titleMatches' | 'snippet' | 'snippetMatches'>>> {
   if (!host.present) return {}
+  let timer: ReturnType<typeof setTimeout> | undefined
   try {
-    const p = await host.present(e)
-    const title = typeof p?.title === 'string' ? p.title.trim().slice(0, TITLE_MAX).trim() : ''
-    let snippet = typeof p?.snippet === 'string' ? p.snippet.replace(/\s+/g, ' ').trim() : ''
-    if (snippet.length > SNIPPET_MAX) snippet = `${snippet.slice(0, SNIPPET_MAX - 1).trimEnd()}…`
-    return { title: title || undefined, snippet: snippet || undefined }
+    const timeout = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('present timed out')), PRESENT_TIMEOUT_MS) })
+    const p = await Promise.race([host.present(e), timeout])
+    const out: Partial<Pick<SearchHit, 'title' | 'titleMatches' | 'snippet' | 'snippetMatches'>> = {}
+    const t = typeof p?.title === 'string' ? buildTitle(p.title, qt) : null
+    if (t) { out.title = t.title; if (t.matches.length) out.titleMatches = t.matches }
+    const sn = typeof p?.text === 'string' ? buildSnippet(p.text, qt) : null
+    if (sn) { out.snippet = sn.snippet; if (sn.matches.length) out.snippetMatches = sn.matches }
+    return out
   } catch (err) {
     safeLog(host, `asset-index: present failed for ${e.id}`, err)
     return {}
+  } finally {
+    clearTimeout(timer)
   }
 }
 
