@@ -9,7 +9,7 @@
 #
 # Copied from hyperspec's publish.yml on 2026-09-30, which carried it from superskill and
 # docusaurus-preset-wiki, where every comment below was earned. This package has a build and a
-# fixture app, so both run before the publish, as they do in docusaurus-preset-wiki.
+# consumer check (a stub that skips until test/consumer exists), and both run before the publish.
 # A long-lived automation token in a secret would work today and stop working on a date
 # somebody else picked.
 #
@@ -110,7 +110,8 @@ jobs:
 
       # The package is the product, so it is checked before it is published, never after: the
       # tests, the build that IS the package (with its dist check), the private-words check that
-      # keeps every name out of a public package, and an app that installs the packed tarball.
+      # keeps every name out of a public package, and the consumer check (a stub that skips until
+      # test/consumer exists).
       - run: npm test
       - run: npm run build
       - run: npm run check:private-words

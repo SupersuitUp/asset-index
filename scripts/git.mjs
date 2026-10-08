@@ -1,4 +1,4 @@
-// The one place living/ runs git. Synchronous on purpose: every step depends on the last.
+// The one place these scripts run git. Synchronous on purpose: every step depends on the last.
 import { spawnSync } from 'node:child_process'
 
 export function tryGit(cwd, ...args) {

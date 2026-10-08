@@ -15,8 +15,8 @@
 //
 // Matching is by whole words (a phrase is a run of whole words), so "ben" never hits "benefit".
 //
-//   node living/private-words.mjs [--repo <path>]          exit 1 and list hits, 0 when clean
-//   node living/private-words.mjs --add <word>... [--repo <path>]
+//   node scripts/private-words.mjs [--repo <path>]          exit 1 and list hits, 0 when clean
+//   node scripts/private-words.mjs --add <word>... [--repo <path>]
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'

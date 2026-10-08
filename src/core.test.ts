@@ -3,7 +3,7 @@ import { terms, fuse, parseDescription, describePrompt } from './core.js'
 
 describe('terms', () => {
   it('lowercases, splits on non-letters, drops stopwords and 1-letter words, dedupes', () => {
-    expect(terms('Desi laughing at the BEACH', 'beach, sunset')).toEqual(['desi', 'laughing', 'beach', 'sunset'])
+    expect(terms('Sam laughing at the BEACH', 'beach, sunset')).toEqual(['sam', 'laughing', 'beach', 'sunset'])
   })
   it('keeps non-Latin scripts whole', () => {
     expect(terms('ሰላም friend')).toEqual(['ሰላም', 'friend'])
