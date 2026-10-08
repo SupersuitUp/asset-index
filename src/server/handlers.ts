@@ -1,5 +1,5 @@
 import type { AssetIndexHost } from './host.js'
-import { search, sweep } from './indexer.js'
+import { safeLog, search, sweep } from './indexer.js'
 
 const json = (body: unknown, status = 200) =>
   Response.json(body, { status, headers: { 'cache-control': 'no-store' } })
@@ -14,7 +14,7 @@ function intOr(v: unknown, fallback: number): number {
 /** GET searches (session member or agent key); POST runs a sweep (agent key only). */
 export function assetSearchHandlers<M extends string>(host: AssetIndexHost<M>) {
   const fail = (err: unknown) => {
-    host.log?.('asset-search failed', err)
+    safeLog(host, 'asset-search failed', err)
     return json({ error: 'internal' }, 500)
   }
   return {

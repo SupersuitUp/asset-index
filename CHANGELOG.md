@@ -2,7 +2,7 @@
 
 ## 0.1.1
 
-2026-10-08
+2026-10-07
 
 - `indexById(host, id)`: the call to make from a finalize hook. It loads the asset, indexes it, then
   reads it again: an asset hidden or deleted while it was being described is forgotten, a narrowed
@@ -16,7 +16,12 @@
   entry. Forgotten ids count as skipped. Same options and same answer.
 - `assetSearchHandlers` `POST` inherits all of this through `sweep`; its contract is unchanged.
 - `indexAsset` is unchanged and still exported as the low-level call.
-- Each id in a sweep is now read twice (before and after its put).
+- Every `indexById` call, from a finalize hook or a sweep, reads the asset through `host.load` twice
+  (three times when visibility changed mid-describe), against zero for `indexAsset(host, input)`.
+  Keep `load` cheap or accept the extra reads.
+- `indexById` never rejects: if even the failed entry cannot be written, it logs and answers
+  `'failed'`. A `host.log` that throws is swallowed everywhere it is called, so it can no longer
+  defeat a sweep's per-id catch or turn a handler's 500 into a rejection.
 
 ## 0.1.0
 

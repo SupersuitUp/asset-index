@@ -228,3 +228,33 @@ describe('the POST backfill through assetSearchHandlers', () => {
     expect(await res.json()).toEqual({ indexed: 1, failed: 1, skipped: 0, next: null })
   })
 })
+
+describe('nothing a host does wrong makes indexById or sweep reject', () => {
+  it('the store throws on every put: indexById resolves to failed', async () => {
+    rows.a1 = { text: 'beach', visibleTo: [] }
+    host.store = { ...host.store, put: async () => { throw new Error('store down') } }
+    await expect(indexById(host, 'a1')).resolves.toBe('failed')
+  })
+  it('the store throws on every put and load throws: indexById still resolves to failed', async () => {
+    rows.a1 = { text: 'beach', visibleTo: [] }
+    broken.add('a1')
+    host.store = { ...host.store, put: async () => { throw new Error('store down') } }
+    await expect(indexById(host, 'a1')).resolves.toBe('failed')
+  })
+  it('a throwing log never defeats the per-id catch: the sweep finishes and counts', async () => {
+    rows.a0 = { text: 'beach', visibleTo: [] }
+    rows.a1 = { text: 'city', visibleTo: [] }
+    rows.a2 = { text: 'beach city', visibleTo: [] }
+    broken.add('a1')
+    const get = host.store.get
+    host.store = { ...host.store, get: async (id) => { if (id === 'a2') throw new Error('store hiccup'); return get(id) } }
+    host.log = () => { throw new Error('log down') }
+    expect(await sweep(host, { cursor: null, limit: 10, backfill: true })).toEqual({ indexed: 1, failed: 2, skipped: 0, next: null })
+  })
+  it('a throwing log never turns a handler error into a rejection', async () => {
+    host.log = () => { throw new Error('log down') }
+    host.store = { ...host.store, failed: async () => { throw new Error('store down') } }
+    const res = await assetSearchHandlers(host).POST(new Request('http://x', { method: 'POST', body: JSON.stringify({ sweep: { backfill: false } }) }))
+    expect(res.status).toBe(500)
+  })
+})

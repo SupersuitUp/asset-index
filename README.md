@@ -127,6 +127,10 @@ failed entry for the retry sweep to settle. A `load` that throws is also recorde
 retried instead of silently never indexed. A failed entry is never returned by search. The sweep and
 the `POST` handler go through `indexById` for every id, so they get the same protection.
 
+The re-read has a cost: `indexById` calls `load` twice per asset, and three times when visibility
+changed mid-describe, where `indexAsset(host, input)` calls it zero times. Keep `load` cheap, or
+accept the extra reads (for a photo host that is typically one more Storage download per photo).
+
 An `AssetInput` is the id, the kind (`photo`, `video`, `voice` or `text`), a display-size
 JPEG or poster frame in `image` and/or the transcript or body in `text`, `takenAt`, an app-relative
 `href`, the thumbnail's storage path, and `visibleTo` (an empty array means every member).
@@ -206,10 +210,10 @@ gcloud firestore indexes composite create --project=<P> --collection-group=<COLL
   supplies and nothing else, so a caption never names someone the app did not say is there.
 - **An entry is never wider than the asset now is.** `indexById` re-reads after every write (see
   above), and a sweep that hits an asset it cannot read records it failed and carries on with the
-  rest of the page.
-- **An index failure never fails an upload.** `indexAsset` catches every describe and embed error and records a failed entry. If the store
-  itself is down, `indexAsset` and `indexById` reject, which is why it runs inside `after()` and never on the upload
-  path. The hourly sweep retries failed entries.
+  rest of the page. This holds provided `load` reads live state and the app calls `indexById` or
+  `forgetAsset` after each visibility change.
+- **An index failure never fails an upload.** `indexAsset` catches every describe and embed error and records a failed entry. `indexById` never rejects; `indexAsset` rejects if the store is down, so run it inside `after()`
+  and never on the upload path. The hourly sweep retries failed entries.
 - **Visibility is enforced at search.** An entry with a non-empty `visibleTo` is returned only to
   the people listed.
 
