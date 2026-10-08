@@ -2,7 +2,8 @@ import { it, expect } from 'vitest'
 import { indexAsset, forgetAsset, search, sweep } from './indexer.js'
 import { memoryStore } from './memory-store.js'
 import type { Model } from './model.js'
-import type { AssetInput } from '../types.js'
+import type { AssetInput, IndexEntry } from '../types.js'
+import { terms } from '../core.js'
 
 const vec = (s: string) => [s.includes('beach') ? 1 : 0, s.includes('city') ? 1 : 0, 0.01]
 const fake = (fail = false): Model => ({
@@ -209,4 +210,207 @@ it('the caption, tags and visibleText never appear on a hit, even when present r
   const hits = await search(h, 'g', 'beach')
   expect(JSON.stringify(hits)).not.toContain('zebra')
   expect(Object.keys(hits[0]).sort()).toEqual(['href', 'id', 'kind', 'score', 'takenAt', 'thumbUrl'])
+})
+
+// visibleNow: the live check, run before a hit is signed or presented.
+const thumbed = (n: number) => Array.from({ length: n }, (_, i) => ({ ...asset(String(i + 1), `beach day ${i + 1}`), thumbPath: `t/${i + 1}.jpg` }))
+const baseline = async (xs: AssetInput[], limit: number) => {
+  const h = hostWith(fake(), xs)
+  await indexAll(h, xs)
+  return (await search(h, 'g', 'beach', limit)).map((x) => x.id)
+}
+
+it('visibleNow drops a stale hit and the next passing candidate fills its slot, in ranking order', async () => {
+  const xs = thumbed(5)
+  const order = await baseline(xs, 5)
+  const stale = order[1]!
+  const h = { ...hostWith(fake(), xs), visibleNow: async (e: IndexEntry) => e.id !== stale }
+  await indexAll(h, xs)
+  const hits = await search(h, 'g', 'beach', 3)
+  expect(hits.map((x) => x.id)).toEqual([order[0], order[2], order[3]])
+})
+it('visibleNow receives the asker and a copy of the entry it can mutate harmlessly', async () => {
+  const xs = thumbed(1)
+  const seen: string[] = []
+  const h = {
+    ...hostWith(fake(), xs),
+    visibleNow: async (e: IndexEntry, who: string) => { seen.push(who); e.href = '/evil'; e.thumbPath = 'evil'; return true },
+  }
+  await indexAll(h, xs)
+  const [hit] = await search(h, 'd', 'beach')
+  expect(seen).toEqual(['d'])
+  expect(hit).toMatchObject({ href: '/a/1', thumbUrl: 'https://signed/t/1.jpg' })
+})
+it('at most limit x 3 candidates are checked, even when every check fails', async () => {
+  const xs = thumbed(12)
+  let calls = 0
+  const h = { ...hostWith(fake(), xs), visibleNow: async () => { calls++; return false } }
+  await indexAll(h, xs)
+  expect(await search(h, 'g', 'beach', 2)).toEqual([])
+  expect(calls).toBe(6)
+})
+it('when every check passes, exactly limit checks are made', async () => {
+  const xs = thumbed(12)
+  let calls = 0
+  const h = { ...hostWith(fake(), xs), visibleNow: async () => { calls++; return true } }
+  await indexAll(h, xs)
+  expect(await search(h, 'g', 'beach', 4)).toHaveLength(4)
+  expect(calls).toBe(4)
+})
+it('checks run in small parallel batches, never all candidates at once', async () => {
+  const xs = thumbed(30)
+  let live = 0, peak = 0
+  const h = {
+    ...hostWith(fake(), xs),
+    visibleNow: async () => { live++; peak = Math.max(peak, live); await new Promise((r) => setTimeout(r, 2)); live--; return false },
+  }
+  await indexAll(h, xs)
+  await search(h, 'g', 'beach', 10)
+  expect(peak).toBeGreaterThan(1)
+  expect(peak).toBeLessThanOrEqual(6)
+})
+it('a visibleNow that throws, times out or answers a non-boolean drops that hit (fail closed)', async () => {
+  const xs = thumbed(4)
+  const order = await baseline(xs, 4)
+  const logged: string[] = []
+  const h = {
+    ...hostWith(fake(), xs),
+    log: (m: string) => { logged.push(m) },
+    visibleNow: (e: IndexEntry): Promise<boolean> => {
+      if (e.id === order[0]) return Promise.reject(new Error('boom'))
+      if (e.id === order[1]) return new Promise<boolean>(() => {})
+      if (e.id === order[2]) return Promise.resolve('yes' as unknown as boolean)
+      return Promise.resolve(true)
+    },
+  }
+  await indexAll(h, xs)
+  const hits = await search(h, 'g', 'beach', 4)
+  expect(hits.map((x) => x.id)).toEqual([order[3]])
+  expect(logged.some((m) => m.includes(order[0]!))).toBe(true)
+  expect(logged.some((m) => m.includes(order[1]!))).toBe(true)
+})
+it('no thumbnail is signed and present is never called for a dropped hit', async () => {
+  const xs = thumbed(4)
+  const order = await baseline(xs, 4)
+  const signed: string[] = []
+  const presented: string[] = []
+  const h = {
+    ...hostWith(fake(), xs),
+    signedUrl: async (p: string) => { signed.push(p); return `https://signed/${p}` },
+    visibleNow: async (e: IndexEntry) => e.id !== order[0] && e.id !== order[2],
+    present: async (e: IndexEntry) => { presented.push(e.id); return null },
+  }
+  await indexAll(h, xs)
+  const hits = await search(h, 'g', 'beach', 4)
+  expect(hits.map((x) => x.id)).toEqual([order[1], order[3]])
+  expect(signed.sort()).toEqual([`t/${order[1]}.jpg`, `t/${order[3]}.jpg`].sort())
+  expect(presented.sort()).toEqual([order[1], order[3]].sort())
+})
+it('present receives ctx.who, the person the search is answered for, and never the query', async () => {
+  const xs = thumbed(1)
+  const args: unknown[][] = []
+  const h = { ...hostWith(fake(), xs), present: async (...a: unknown[]) => { args.push(a); return { title: 'x' } } }
+  await indexAll(h, xs)
+  await search(h, 'd', 'beach')
+  expect(args).toHaveLength(1)
+  expect(args[0]).toHaveLength(2)
+  // Exactly { who }: no query, no terms of it.
+  expect(args[0]![1]).toEqual({ who: 'd' })
+})
+it('present gets a shallow copy: writing to it never changes the hit', async () => {
+  const xs = thumbed(1)
+  const h = { ...hostWith(fake(), xs), present: async (e: IndexEntry) => { e.href = '/evil'; e.kind = 'photo'; return null } }
+  await indexAll(h, xs)
+  const [hit] = await search(h, 'g', 'beach')
+  expect(hit).toMatchObject({ href: '/a/1', kind: 'text' })
+})
+it('without visibleNow, behavior is exactly 0.1.2: a stale entry is returned and every hit is signed', async () => {
+  const xs = thumbed(3)
+  const signed: string[] = []
+  const h = { ...hostWith(fake(), xs), signedUrl: async (p: string) => { signed.push(p); return `https://signed/${p}` } }
+  await indexAll(h, xs)
+  // The asset is gone from the app, but the entry was never forgotten.
+  h.load = async () => null
+  const hits = await search(h, 'g', 'beach', 2)
+  expect(hits).toHaveLength(2)
+  expect(signed).toHaveLength(2)
+})
+
+// Matching hardening.
+it('an NFD query matches NFC text, by word and in the highlight ranges', async () => {
+  const xs = [asset('1', 'un café noir')]
+  const h = { ...hostWith(fake(), xs), present: async () => ({ title: 'Café', text: 'un café noir' }) }
+  await indexAll(h, xs)
+  const byWord = await h.store.byTerms(terms('café'), 10)
+  expect(byWord).toEqual(['1'])
+  const [hit] = await search(h, 'g', 'café')
+  expect(hit.snippetMatches!.map(([s, e]) => hit.snippet!.slice(s, e))).toEqual(['café'])
+  expect(hit.titleMatches!.map(([s, e]) => hit.title!.slice(s, e))).toEqual(['Café'])
+})
+it('NFD text from present is returned normalized, and its ranges index the returned string', async () => {
+  const xs = [asset('1', 'cafe')]
+  const h = { ...hostWith(fake(), xs), present: async () => ({ title: 'Café au lait', text: 'le café du matin' }) }
+  await indexAll(h, xs)
+  const [hit] = await search(h, 'g', 'café')
+  expect(hit.title).toBe('Café au lait')
+  expect(hit.snippet).toBe('le café du matin')
+  expect(hit.snippetMatches).toEqual([[3, 7]])
+  expect(hit.titleMatches).toEqual([[0, 4]])
+})
+it('a query of "lov love" gives one range per word, never two overlapping ones', async () => {
+  const xs = [asset('1', 'love')]
+  const h = { ...hostWith(fake(), xs), present: async () => ({ title: 'Love song', text: 'I loved her, love is lovely, and so on.' }) }
+  await indexAll(h, xs)
+  const [hit] = await search(h, 'g', 'lov love')
+  expect(hit.snippetMatches!.map(([s, e]) => hit.snippet!.slice(s, e))).toEqual(['loved', 'love', 'lovely'])
+  expect(hit.titleMatches).toEqual([[0, 4]])
+  const r = hit.snippetMatches!
+  for (let i = 1; i < r.length; i++) expect(r[i]![0]).toBeGreaterThanOrEqual(r[i - 1]![1])
+})
+it('a match at the very end of a long text is shown, with no trailing ellipsis', async () => {
+  const xs = [asset('1', 'beach')]
+  const text = `${'sand '.repeat(2000)}the beach`
+  const h = { ...hostWith(fake(), xs), present: async () => ({ text }) }
+  await indexAll(h, xs)
+  const [hit] = await search(h, 'g', 'beach')
+  expect(hit.snippet!.length).toBeLessThanOrEqual(160)
+  expect(hit.snippet!.startsWith('…')).toBe(true)
+  expect(hit.snippet!.endsWith('the beach')).toBe(true)
+  const [s, e] = hit.snippetMatches![0]!
+  expect(hit.snippet!.slice(s, e)).toBe('beach')
+  expect(e).toBe(hit.snippet!.length)
+})
+it('text past 20,000 characters is never matched', async () => {
+  const xs = [asset('1', 'beach')]
+  const text = `${'s'.repeat(20_000)} beach`
+  const h = { ...hostWith(fake(), xs), present: async () => ({ text }) }
+  await indexAll(h, xs)
+  const [hit] = await search(h, 'g', 'beach')
+  expect(hit.snippet!.startsWith('sss')).toBe(true)
+  expect(hit).not.toHaveProperty('snippetMatches')
+})
+it('an astral character at the cut is never split, in the title, the snippet or the 20,000 cap', async () => {
+  const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+  const xs = [asset('1', 'beach')]
+  // Title: the emoji's high surrogate sits at index 118, the last one kept before the "…".
+  const title = `${'t'.repeat(118)}😀${'u'.repeat(20)}`
+  // Snippet: no spaces near the cut, so the window ends exactly on the emoji pair.
+  const snippetText = `beach ${'x'.repeat(152)}😀${'y'.repeat(40)}`
+  const h = { ...hostWith(fake(), xs), present: async () => ({ title, text: snippetText }) }
+  await indexAll(h, xs)
+  const [hit] = await search(h, 'g', 'beach')
+  expect(hit.title!).not.toMatch(lone)
+  expect(hit.title!.endsWith('…')).toBe(true)
+  expect(hit.snippet!).not.toMatch(lone)
+  expect(hit.snippet!.endsWith('…')).toBe(true)
+  // The cap: a match just before it pulls the window to the end, where the emoji straddles index 20,000.
+  const head = `${'z'.repeat(19_991)} beach q`
+  expect(head.length).toBe(19_999)
+  const capped = `${head}😀 tail beach`
+  const h2 = { ...hostWith(fake(), xs), present: async () => ({ text: capped }) }
+  await indexAll(h2, xs)
+  const [hit2] = await search(h2, 'g', 'beach')
+  expect(hit2.snippet!.endsWith('beach q')).toBe(true)
+  expect(hit2.snippet!).not.toMatch(lone)
+  expect(hit2.snippetMatches!.map(([s, e]) => hit2.snippet!.slice(s, e))).toEqual(['beach'])
 })

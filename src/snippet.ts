@@ -1,5 +1,7 @@
 export const TITLE_MAX = 120
 export const SNIPPET_MAX = 160
+/** The most of present's `text` ever read; anything past it is never matched or shown. */
+export const TEXT_MAX = 20_000
 const LEAD = 50
 
 const collapse = (s: string) => s.replace(/\s+/g, ' ').trim()
@@ -9,7 +11,7 @@ export function matchRanges(s: string, queryTerms: string[]): [number, number][]
   if (!queryTerms.length) return []
   const out: [number, number][] = []
   for (const m of s.matchAll(/[\p{L}\p{N}]+/gu)) {
-    const w = m[0].toLowerCase()
+    const w = m[0].toLowerCase().normalize('NFC')
     if (queryTerms.some((t) => w.startsWith(t))) out.push([m.index!, m.index! + m[0].length])
   }
   return out
@@ -18,8 +20,11 @@ export function matchRanges(s: string, queryTerms: string[]): [number, number][]
 /** Cuts a string at `max` code units without splitting a surrogate pair. */
 const safeEnd = (s: string, end: number) => (end > 0 && end < s.length && /[\uDC00-\uDFFF]/.test(s[end]) ? end - 1 : end)
 
+/** At most TEXT_MAX code units (never half a surrogate pair), then NFC, so every range is computed on the string returned. */
+const prepare = (raw: string) => raw.slice(0, safeEnd(raw, TEXT_MAX)).normalize('NFC')
+
 export function buildTitle(raw: string, queryTerms: string[]): { title: string; matches: [number, number][] } | null {
-  const t = raw.trim()
+  const t = prepare(raw).trim()
   if (!t) return null
   const title = t.length > TITLE_MAX ? `${t.slice(0, safeEnd(t, TITLE_MAX - 1)).trimEnd()}…` : t
   return { title, matches: matchRanges(title, queryTerms) }
@@ -31,7 +36,7 @@ export function buildTitle(raw: string, queryTerms: string[]): { title: string; 
  * characters. Offsets are computed on the returned string, so they are always valid for it.
  */
 export function buildSnippet(raw: string, queryTerms: string[]): { snippet: string; matches: [number, number][] } | null {
-  const text = collapse(raw)
+  const text = collapse(prepare(raw))
   if (!text) return null
   let snippet = text
   if (text.length > SNIPPET_MAX) {

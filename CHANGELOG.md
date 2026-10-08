@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.3
+
+2026-10-08
+
+- New optional host method `visibleNow(entry, who)`: the live check. `search` calls it for each
+  ranked candidate, in ranking order, before signing a thumbnail and before `present`, and keeps
+  going down the ranking until it has `limit` passing hits or runs out, so a dropped hit's slot is
+  filled. At most `limit` x 3 candidates are checked per search, in parallel batches of up to 6. A
+  throw, a timeout (1500 ms) or any answer but `true` drops the hit (fail closed). Without it,
+  search is exactly as in 0.1.2. This replaces the `liveSearchGET` wrapper three host apps wrote
+  around `GET`; the README shows how to delete one.
+- `present` gains a second argument, `ctx: { who }`, the person the search is answered for. It
+  still never receives the query. Existing one-argument `present` functions keep working.
+- `present` and `visibleNow` receive a shallow copy of the entry, so a host that writes to it cannot
+  change the hit being built.
+- Only the first 20,000 characters of `present`'s `text` are read (cut without splitting a
+  surrogate pair).
+- NFC normalization in `terms()`, in the query, and in `title`/`snippet` matching, so a query typed
+  in decomposed form matches precomposed text. Ranges index the returned, normalized strings.
+  Entries indexed from decomposed text before this keep their old terms until re-indexed; nearly
+  all text is already NFC.
+- `assetSearchHandlers` GET: no contract change; it gets the live check through `search`.
+- README: CJK and Thai text match as whole runs.
+
 ## 0.1.2
 
 2026-10-08

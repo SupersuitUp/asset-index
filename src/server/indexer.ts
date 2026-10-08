@@ -28,7 +28,7 @@ export async function indexAsset<M extends string>(host: AssetIndexHost<M>, a: A
 }
 
 export async function search<M extends string>(host: AssetIndexHost<M>, who: M, q: string, limit = 24): Promise<SearchHit[]> {
-  const query = q.trim().slice(0, 300)
+  const query = q.normalize('NFC').trim().slice(0, 300)
   if (!query) return []
   const [byMeaning, byWord] = await Promise.all([
     host.model.embed(query, 'query').then((v) => host.store.nearest(v, 50)),
@@ -37,14 +37,14 @@ export async function search<M extends string>(host: AssetIndexHost<M>, who: M, 
   ])
   const ranked = fuse([byMeaning, byWord])
   const entries = new Map((await host.store.getMany(ranked.map((r) => r.id))).map((e) => [e.id, e]))
-  const picked: IndexEntry[] = []
+  const candidates: IndexEntry[] = []
   for (const r of ranked) {
     const e = entries.get(r.id)
     if (!e || e.status !== 'indexed') continue
     if (e.visibleTo.length && !e.visibleTo.includes(who)) continue
-    picked.push(e)
-    if (picked.length === limit) break
+    candidates.push(e)
   }
+  const picked = host.visibleNow ? await liveOnly(host, who, candidates, limit) : candidates.slice(0, limit)
   const qt = terms(query)
   const score = new Map(ranked.map((r) => [r.id, r.score]))
   const hits: SearchHit[] = await Promise.all(picked.map(async (e) => {
@@ -55,19 +55,61 @@ export async function search<M extends string>(host: AssetIndexHost<M>, who: M, 
     // Only the final hits reach here, after visibility filtering. HARD RULE: whatever present
     // returns must be the asset's own human-written words. This function never copies the entry's
     // caption, tags or visibleText onto a hit; those are never shown to people.
-    return Object.assign(hit, await presentOne(host, e, qt))
+    return Object.assign(hit, await presentOne(host, e, who, qt))
   }))
   return hits
 }
 
-const PRESENT_TIMEOUT_MS = 1500
+const HOST_TIMEOUT_MS = 1500
+/** How many live checks run at once. Small, so a search never fans out a burst of reads. */
+const LIVE_BATCH = 6
+/** Most candidates checked per search, as a multiple of limit, so a mass of stale entries cannot make one search unbounded. */
+const LIVE_CAP_FACTOR = 3
 
-async function presentOne<M extends string>(host: AssetIndexHost<M>, e: IndexEntry, qt: string[]): Promise<Partial<Pick<SearchHit, 'title' | 'titleMatches' | 'snippet' | 'snippetMatches'>>> {
-  if (!host.present) return {}
+/** Rejects after ms; the returned clear must always be called. */
+function deadline(ms: number, what: string): { timeout: Promise<never>; clear: () => void } {
   let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error(`${what} timed out`)), ms) })
+  return { timeout, clear: () => clearTimeout(timer) }
+}
+
+/** One live check. Anything but a true answer in time is false: a throw, a timeout, a non-boolean. */
+async function checkLive<M extends string>(host: AssetIndexHost<M>, e: IndexEntry, who: M): Promise<boolean> {
+  const d = deadline(HOST_TIMEOUT_MS, 'visibleNow')
   try {
-    const timeout = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('present timed out')), PRESENT_TIMEOUT_MS) })
-    const p = await Promise.race([host.present(e), timeout])
+    return (await Promise.race([host.visibleNow!({ ...e }, who), d.timeout])) === true
+  } catch (err) {
+    safeLog(host, `asset-index: live check failed for ${e.id}`, err)
+    return false
+  } finally {
+    d.clear()
+  }
+}
+
+/**
+ * Walks the candidates in ranking order, keeping those visibleNow passes, until `limit` are kept or
+ * limit x LIVE_CAP_FACTOR have been checked. Each batch is no larger than the slots still open, so
+ * when every check passes exactly `limit` are made.
+ */
+async function liveOnly<M extends string>(host: AssetIndexHost<M>, who: M, candidates: IndexEntry[], limit: number): Promise<IndexEntry[]> {
+  const cap = Math.min(candidates.length, limit * LIVE_CAP_FACTOR)
+  const kept: IndexEntry[] = []
+  let next = 0
+  while (kept.length < limit && next < cap) {
+    const batch = candidates.slice(next, next + Math.min(LIVE_BATCH, limit - kept.length, cap - next))
+    next += batch.length
+    const pass = await Promise.all(batch.map((e) => checkLive(host, e, who)))
+    batch.forEach((e, i) => { if (pass[i] && kept.length < limit) kept.push(e) })
+  }
+  return kept
+}
+
+async function presentOne<M extends string>(host: AssetIndexHost<M>, e: IndexEntry, who: M, qt: string[]): Promise<Partial<Pick<SearchHit, 'title' | 'titleMatches' | 'snippet' | 'snippetMatches'>>> {
+  if (!host.present) return {}
+  const d = deadline(HOST_TIMEOUT_MS, 'present')
+  try {
+    // A shallow copy, so a host that writes to what it is handed cannot change the hit being built.
+    const p = await Promise.race([host.present({ ...e }, { who }), d.timeout])
     const out: Partial<Pick<SearchHit, 'title' | 'titleMatches' | 'snippet' | 'snippetMatches'>> = {}
     const t = typeof p?.title === 'string' ? buildTitle(p.title, qt) : null
     if (t) { out.title = t.title; if (t.matches.length) out.titleMatches = t.matches }
@@ -78,7 +120,7 @@ async function presentOne<M extends string>(host: AssetIndexHost<M>, e: IndexEnt
     safeLog(host, `asset-index: present failed for ${e.id}`, err)
     return {}
   } finally {
-    clearTimeout(timer)
+    d.clear()
   }
 }
 

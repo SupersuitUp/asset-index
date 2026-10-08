@@ -39,3 +39,13 @@ describe('describePrompt', () => {
     expect(p).toMatch(/never name anyone else/i)
   })
 })
+
+describe('terms normalization', () => {
+  it('normalizes to NFC, so decomposed and precomposed input give the same term', () => {
+    expect(terms('Café')).toEqual(terms('Café'))
+    expect(terms('Café')).toEqual(['café'])
+  })
+  it('keeps CJK and Thai runs whole, since they are written without spaces', () => {
+    expect(terms('東京の海 ทะเลสวย')).toEqual(['東京の海', 'ทะเลสวย'])
+  })
+})

@@ -58,8 +58,10 @@ export interface AssetIndexHost<M extends string> {
   load(id: string): Promise<AssetInput | null>
   /** Ids of every asset the app holds, for backfill. Paged by cursor. */
   listAll(cursor: string | null, limit: number): Promise<{ ids: string[]; next: string | null }>
+  /** Optional. Whether `who` may open this asset right now, read from its live record. */
+  visibleNow?(entry: IndexEntry, who: M): Promise<boolean>
   /** Optional. The asset's own title and a short snippet, for the hits a search returns. */
-  present?(entry: IndexEntry): Promise<{ title?: string; text?: string } | null>
+  present?(entry: IndexEntry, ctx: { who: M }): Promise<{ title?: string; text?: string } | null>
   log?(msg: string, err?: unknown): void
 }
 ```
@@ -78,19 +80,37 @@ export interface AssetIndexHost<M extends string> {
   has to answer the current truth, never a cached copy. A throw is recorded as a failed entry. A failed entry whose asset is gone is
   removed on the next retry sweep; a deleted asset's entry is removed by `forgetAsset`.
 - `listAll(cursor, limit)`: one page of every asset id the app holds, for backfill.
-- `present(entry)`: optional. Called at query time, once per hit a search is about to return (after
-  visibility is filtered, never for the rest of the ranked candidates), in parallel, each call
-  caught and each given 1500 ms. Return `{ title?, text? }`: the asset's own title and its full
+- `visibleNow(entry, who)`: optional, and recommended. The live check. Search finds hits by each
+  entry's STORED `visibleTo`, and an entry can lag its asset: a hide or an unshare whose
+  `forgetAsset` failed leaves an entry wider than the asset now is, until something settles it.
+  When `visibleNow` is set, `search` asks it about each ranked candidate, in ranking order, before
+  signing a thumbnail and before calling `present`, and keeps walking down the ranking until it has
+  `limit` hits that pass or runs out, so a dropped hit's slot is filled by the next one that passes.
+  At most `limit` x 3 candidates are checked per search (a mass of stale entries cannot make one
+  search unbounded), in small parallel batches. A throw, no answer within 1500 ms, or anything but
+  `true` counts as false and drops the hit: it fails closed. Answer from the asset's live record,
+  never from the entry. It receives a shallow copy of the entry. Without `visibleNow`, search
+  behaves exactly as in 0.1.2.
+- `present(entry, ctx)`: optional. Called at query time, once per hit a search is about to return
+  (after visibility is filtered and after `visibleNow`, never for the rest of the ranked
+  candidates), in parallel, each call caught and each given 1500 ms. `ctx.who` is the person the
+  search is answered for, so the host can judge which words that person may read. `present` never
+  receives the query. It receives a shallow copy of the entry. Return `{ title?, text? }`: the asset's own title and its full
   human text (a poem body, a note body, an excerpt). A throw, a timeout or `null` just means that
   hit has no title; without `present`, hits are unchanged. It runs at query time so titles stay
   fresh after an edit and nothing needs re-indexing.
-  The package builds the rest, using the query, which the host never sees. `title` is trimmed and
+  The package builds the rest, using the query, which the host never sees. Both strings are
+  NFC-normalized first, and only the first 20,000 characters of `text` are read. `title` is trimmed and
   cut at 120 characters with a trailing `…`. `snippet` is about 160 characters of `text`, whitespace
   collapsed, centered on the first word that begins with a query term (so `love` finds `loved`),
   starting at a word boundary, with `…` on each cut end; with no match it is the first 160
   characters. `titleMatches` and `snippetMatches` are `[start, end)` ranges, one per matching word,
   sorted and non-overlapping, as JavaScript string indices (UTF-16 code units, so slice the string
-  with them directly) into the returned `title` and `snippet`; absent when nothing matched.
+  with them directly) into the returned (normalized) `title` and `snippet`; absent when nothing
+  matched. Words are runs of letters and digits, so text written without spaces (Chinese, Japanese,
+  Thai) is a single run: a query matches it only from the start of the run, and a query word from
+  the middle of a sentence in those scripts does not match by word (it can still be found by
+  meaning).
   **The package never returns HTML. The UI must escape `title` and `snippet` and wrap only the given
   ranges in `<mark>`.**
   **Hard rule: `present` must return the asset's own human-written words** (a poem's title and
@@ -157,8 +177,46 @@ JPEG or poster frame in `image` and/or the transcript or body in `text`, `takenA
 `href`, the thumbnail's storage path, and `visibleTo` (an empty array means every member).
 
 3. Mount the handlers at `src/app/api/asset-search/route.ts` (the 30 seconds block above).
+   Implement `visibleNow` on the host rather than wrapping `GET`: `search` does the live check
+   itself.
    `GET /api/asset-search?q=...&limit=24` returns `{ hits: SearchHit[] }`. `POST` runs a sweep and
    answers only to the agent key.
+
+### Deleting a hand-rolled live check
+
+Before 0.1.3, apps that needed search to respect live visibility wrapped `GET` with their own
+`liveSearchGET`, which re-ran a `visibleNow(hit, who)` over the finished answer. That wrapper
+filtered after the fact: it signed thumbnails and called `present` for hits it then threw away, and
+a dropped hit left the answer short instead of being replaced. With 0.1.3, move the check onto the
+host and delete the wrapper:
+
+```ts
+// src/lib/asset-host.ts
+export const host: AssetIndexHost<MemberId> = {
+  // ...as before
+  // was: export async function visibleNow(hit: Pick<SearchHit, 'id' | 'href'>, who: string)
+  visibleNow: (entry, who) => visibleNow(entry, who),
+  present: presentAsset,
+}
+// delete: export function liveSearchGET(...) { ... }
+```
+
+```ts
+// src/app/api/asset-search/route.ts
+import { assetSearchHandlers } from '@supersuit/asset-index/server'
+import { host } from '@/lib/asset-host'
+
+export const runtime = 'nodejs'
+// was: const handlers = assetSearchHandlers(host); export const GET = liveSearchGET(handlers.GET)
+export const { GET, POST } = assetSearchHandlers(host)
+```
+
+An existing `visibleNow(hit, who)` that reads only `hit.id` and `hit.href` works unchanged, because
+an `IndexEntry` carries both. A `presentAsset` that re-derived "may everyone the entry names still
+read this" can now ask the narrower question with `ctx.who`, since every hit it sees has already
+passed `visibleNow` for that person. Tests that exercised the wrapper move to the host's
+`visibleNow`; the GET contract (auth, 401, limits, `{ hits }`, `no-store`) is the package's and is
+unchanged.
 
 4. Retry what failed, hourly. A cron that runs the sweep without backfill retries failed entries,
    oldest first.
@@ -236,7 +294,8 @@ gcloud firestore indexes composite create --project=<P> --collection-group=<COLL
 - **An index failure never fails an upload.** `indexAsset` catches every describe and embed error and records a failed entry. `indexById` never rejects; `indexAsset` rejects if the store is down, so run it inside `after()`
   and never on the upload path. The hourly sweep retries failed entries.
 - **Visibility is enforced at search.** An entry with a non-empty `visibleTo` is returned only to
-  the people listed.
+  the people listed. With `visibleNow`, the asset's live record has the last word too, and a hit it
+  refuses (or cannot answer for in time) is never signed, presented or returned.
 
 ## Releasing
 

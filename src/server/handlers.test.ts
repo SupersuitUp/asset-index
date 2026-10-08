@@ -133,3 +133,12 @@ it('GET passes title and snippet (with ranges) from host.present through in hits
   const r = await assetSearchHandlers(h).GET(get('?q=beach'))
   expect((await r.json()).hits[0]).toMatchObject({ id: '1', title: 'Ode', snippet: 'a sunny beach poem', snippetMatches: [[8, 13]] })
 })
+it('GET drops a hit the host live check refuses, with no wrapper, and the answer keeps its shape', async () => {
+  const h = mk({ member: async () => 'g', visibleNow: async (e) => e.id !== '1' })
+  await indexAsset(h, asset('1', 'sunny beach'))
+  await indexAsset(h, asset('2', 'beach at dusk'))
+  const r = await assetSearchHandlers(h).GET(get('?q=beach'))
+  expect(r.status).toBe(200)
+  expect(r.headers.get('cache-control')).toBe('no-store')
+  expect((await r.json()).hits.map((x: { id: string }) => x.id)).toEqual(['2'])
+})

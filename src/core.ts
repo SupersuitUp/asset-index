@@ -2,10 +2,15 @@ import type { AssetKind, Description } from './types.js'
 
 const STOP = new Set(['the','a','an','and','or','of','at','in','on','to','with','for','is','are','was','it','its','this','that','by','from','as'])
 
+/**
+ * Lowercased unique words, NFC-normalized so a query typed in decomposed form (e + combining accent)
+ * matches text stored precomposed. Splits on anything that is not a letter or digit, so scripts
+ * written without spaces (CJK, Thai) come out as whole runs, not words.
+ */
 export function terms(...parts: string[]): string[] {
   const out = new Set<string>()
   for (const part of parts) {
-    for (const w of part.toLowerCase().split(/[^\p{L}\p{N}]+/u)) {
+    for (const w of part.toLowerCase().normalize('NFC').split(/[^\p{L}\p{N}]+/u)) {
       if (w.length < 2 || STOP.has(w)) continue
       out.add(w)
       if (out.size === 200) return [...out]
