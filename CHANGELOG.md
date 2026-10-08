@@ -9,7 +9,8 @@
 - `search` ranks by meaning and by word together (rank fusion), enforces `visibleTo`, signs
   thumbnails at search time, and never returns the caption.
 - `sweep` retries failed entries oldest first and, with `backfill`, pages through every asset the
-  app holds; entries whose asset is gone are removed.
+  app holds; a failed entry whose asset is gone is removed on the next retry sweep.
+- `forgetAsset(host, id)` removes a deleted asset's entry, so it stops being searchable.
 - `assetSearchHandlers(host)`: `GET` searches for a member or the agent key, `POST` runs a sweep
   for the agent key only.
 - `AssetIndexHost`, `IndexStore` and `Model` seams, with `firestoreStore`, `memoryStore` and

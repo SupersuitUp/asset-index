@@ -12,10 +12,6 @@ where the index is kept.
 
 ## 30 seconds
 
-```bash
-npm install @supersuit/asset-index firebase-admin @google/genai
-```
-
 ```ts
 // src/app/api/asset-search/route.ts
 import { assetSearchHandlers } from '@supersuit/asset-index/server'
@@ -31,12 +27,12 @@ export const { GET, POST } = assetSearchHandlers(host)
 npm install @supersuit/asset-index firebase-admin @google/genai
 ```
 
-Node 20.18.1 or later. Two entry points:
+`next` and `server-only` are peer dependencies a Next app already has. Node 20.18.1 or later. Two entry points:
 
 - `@supersuit/asset-index`: the types and the pure rules, safe anywhere (`AssetInput`,
   `IndexEntry`, `SearchHit`, `Description`, `AssetKind`, `EMBED_DIMENSIONS`,
   `DEFAULT_DESCRIBE_MODEL`, `DEFAULT_EMBED_MODEL`).
-- `@supersuit/asset-index/server`: `indexAsset`, `search`, `sweep`, `assetSearchHandlers`,
+- `@supersuit/asset-index/server`: `indexAsset`, `forgetAsset`, `search`, `sweep`, `assetSearchHandlers`,
   `firestoreStore`, `memoryStore`, `geminiModel`, and the `AssetIndexHost`, `IndexStore` and
   `Model` types. Server only: it imports `server-only`, so a client bundle that reaches it fails to
   build.
@@ -75,8 +71,8 @@ export interface AssetIndexHost<M extends string> {
   `memoryStore()` for tests.
 - `model`: `geminiModel(apiKey)` for production.
 - `signedUrl(path)`: turns a stored thumbnail path into a URL, at search time.
-- `load(id)`: re-reads one asset as an `AssetInput`, or `null` once it is gone. A `null` removes
-  its index entry on the next sweep.
+- `load(id)`: re-reads one asset as an `AssetInput`, or `null` once it is gone. A failed entry whose asset is gone is
+  removed on the next retry sweep; a deleted asset's entry is removed by `forgetAsset`.
 - `listAll(cursor, limit)`: one page of every asset id the app holds, for backfill.
 - `log(message, err)`: optional. Where indexing failures are reported.
 
@@ -143,6 +139,8 @@ curl -X POST https://your.app/api/asset-search \
 How the agent key is presented is the app's choice: `agentMember` reads whatever header the app
 uses. A backfill skips assets that are already indexed, so it is safe to run again.
 
+6. When an asset is deleted, call `forgetAsset(host, id)` in the same delete path.
+
 ## Environment
 
 - `GEMINI_API_KEY`: read through the `apiKey` callback you pass to `geminiModel`, only when the
@@ -187,9 +185,9 @@ gcloud firestore indexes composite create --project=<P> --collection-group=<COLL
   used to read what the model said about a photo someone else can see.
 - **People come only from `host.people()`.** The describing model is given the names the app
   supplies and nothing else, so a caption never names someone the app did not say is there.
-- **An index failure never fails an upload.** `indexAsset` catches every error, stores the entry as
-  failed with the reason, and the hourly sweep retries it. Used with `after`, the upload has
-  already answered.
+- **An index failure never fails an upload.** `indexAsset` catches every describe and embed error and records a failed entry. If the store
+  itself is down, `indexAsset` rejects, which is why it runs inside `after()` and never on the upload
+  path. The hourly sweep retries failed entries.
 - **Visibility is enforced at search.** An entry with a non-empty `visibleTo` is returned only to
   the people listed.
 

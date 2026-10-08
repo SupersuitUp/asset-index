@@ -67,3 +67,8 @@ export async function sweep<M extends string>(host: AssetIndexHost<M>, opts: { c
   }
   return { indexed, failed, skipped, next: page.next }
 }
+
+/** Removes an asset's entry. Call it wherever the app deletes the asset; forgetting an unknown id is a no-op. */
+export async function forgetAsset<M extends string>(host: AssetIndexHost<M>, id: string): Promise<void> {
+  await host.store.delete(id)
+}

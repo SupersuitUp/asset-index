@@ -1,5 +1,5 @@
 import { it, expect } from 'vitest'
-import { indexAsset, search, sweep } from './indexer.js'
+import { indexAsset, forgetAsset, search, sweep } from './indexer.js'
 import { memoryStore } from './memory-store.js'
 import type { Model } from './model.js'
 import type { AssetInput } from '../types.js'
@@ -85,4 +85,18 @@ it('with limit 1 and two failing entries, the second retry sweep picks the other
   await new Promise((r) => setTimeout(r, 5))
   await sweep(spy, { cursor: null, limit: 1, backfill: false })
   expect(seen).toEqual(['1', '2'])
+})
+
+it('forgetAsset removes an indexed asset from search and the store', async () => {
+  const h = hostWith(fake())
+  await indexAsset(h, asset('a1', 'beach day'))
+  expect((await search(h, 'g', 'beach')).map((x) => x.id)).toEqual(['a1'])
+  await forgetAsset(h, 'a1')
+  expect(await search(h, 'g', 'beach')).toEqual([])
+  expect(await h.store.get('a1')).toBeNull()
+})
+
+it('forgetAsset on an unknown id is a no-op', async () => {
+  const h = hostWith(fake())
+  await expect(forgetAsset(h, 'nope')).resolves.toBeUndefined()
 })
