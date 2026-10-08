@@ -1,0 +1,33 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      # No person's name in a public package: the same check every living template runs.
+      - run: npm run check:private-words
+      # No date in a comment under src/: a dated comment is a diary entry about another app.
+      - run: npm run check:comment-dates
+      # An app that installs the packed tarball and builds, so a package that breaks an app's
+      # build is caught here rather than in someone's deploy.
+      - run: npm run check:consumer

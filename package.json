@@ -1,0 +1,72 @@
+{
+  "name": "@supersuit/asset-index",
+  "version": "0.1.0",
+  "description": "Find anything uploaded to an app by describing it: captions, tags and embeddings written at upload, searched by meaning and by word.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && node scripts/check-dist.mjs",
+    "prepack": "npm run build",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "check:private-words": "node scripts/private-words.mjs",
+    "check": "npm run typecheck && npm test && npm run build && npm run check:private-words && npm run check:comment-dates && npm run check:consumer",
+    "check:comment-dates": "node scripts/check-comment-dates.mjs",
+    "check:consumer": "node scripts/check-consumer.mjs"
+  },
+  "engines": {
+    "node": ">=20.18.1"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SupersuitUp/asset-index.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "supersuit",
+    "asset-index",
+    "search",
+    "firestore",
+    "gemini"
+  ],
+  "dependencies": {
+    "server-only": "^0.0.1"
+  },
+  "peerDependencies": {
+    "firebase-admin": "^13.7.0",
+    "@google/genai": "^2.22.0",
+    "next": ">=16.3.4 <17"
+  },
+  "peerDependenciesMeta": {
+    "firebase-admin": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "firebase-admin": "^13.10.0",
+    "next": "^16.3.4",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11",
+    "@google/genai": "^2.22.0"
+  }
+}
