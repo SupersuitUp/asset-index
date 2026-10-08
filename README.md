@@ -58,6 +58,8 @@ export interface AssetIndexHost<M extends string> {
   load(id: string): Promise<AssetInput | null>
   /** Ids of every asset the app holds, for backfill. Paged by cursor. */
   listAll(cursor: string | null, limit: number): Promise<{ ids: string[]; next: string | null }>
+  /** Optional. The asset's own title and a short snippet, for the hits a search returns. */
+  present?(entry: IndexEntry): Promise<{ title?: string; snippet?: string } | null>
   log?(msg: string, err?: unknown): void
 }
 ```
@@ -76,6 +78,16 @@ export interface AssetIndexHost<M extends string> {
   has to answer the current truth, never a cached copy. A throw is recorded as a failed entry. A failed entry whose asset is gone is
   removed on the next retry sweep; a deleted asset's entry is removed by `forgetAsset`.
 - `listAll(cursor, limit)`: one page of every asset id the app holds, for backfill.
+- `present(entry)`: optional. Called at query time, once per hit a search is about to return (after
+  visibility is filtered, never for the rest of the ranked candidates), in parallel, each call
+  caught. Return `{ title?, snippet? }` and the hit carries them: `title` trimmed and cut at 120
+  characters, `snippet` whitespace-collapsed and cut at 160 with a trailing `…`. A throw or `null`
+  just means that hit has no title; without `present`, hits are unchanged. It runs at query time so
+  titles stay fresh after an edit and nothing needs re-indexing.
+  **Hard rule: `present` must return the asset's own human-written words** (a poem's title and
+  first line, a note's title, a moment's name). Never return the entry's AI `caption`, `tags` or
+  `visibleText`: those are never shown to people. The package cannot enforce what a host returns,
+  but it never copies caption, tags or visibleText onto a hit itself.
 - `log(message, err)`: optional. Where indexing failures are reported.
 
 ## Wiring it into a Next.js app
@@ -204,7 +216,7 @@ gcloud firestore indexes composite create --project=<P> --collection-group=<COLL
 - **No central copy.** An entry lives only in the owning app's own Firestore. The package has no
   server, no shared index, and sends nothing anywhere but the model you configured.
 - **Captions are never returned by search.** A hit carries the id, kind, date, link, thumbnail URL
-  and score. The caption is used to find the asset and is not handed back, so a search cannot be
+  and score, plus the `title` and `snippet` the host's `present` chose to supply. The caption is used to find the asset and is not handed back, so a search cannot be
   used to read what the model said about a photo someone else can see.
 - **People come only from `host.people()`.** The describing model is given the names the app
   supplies and nothing else, so a caption never names someone the app did not say is there.

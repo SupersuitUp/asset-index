@@ -45,11 +45,37 @@ export async function search<M extends string>(host: AssetIndexHost<M>, who: M, 
     if (picked.length === limit) break
   }
   const score = new Map(ranked.map((r) => [r.id, r.score]))
-  const hits: SearchHit[] = await Promise.all(picked.map(async (e) => ({
-    id: e.id, kind: e.kind, takenAt: e.takenAt, href: e.href,
-    thumbUrl: e.thumbPath ? await host.signedUrl(e.thumbPath) : null, score: score.get(e.id)!,
-  })))
+  const hits: SearchHit[] = await Promise.all(picked.map(async (e) => {
+    const hit: SearchHit = {
+      id: e.id, kind: e.kind, takenAt: e.takenAt, href: e.href,
+      thumbUrl: e.thumbPath ? await host.signedUrl(e.thumbPath) : null, score: score.get(e.id)!,
+    }
+    // Only the final hits reach here, after visibility filtering. HARD RULE: whatever present
+    // returns must be the asset's own human-written words. This function never copies the entry's
+    // caption, tags or visibleText onto a hit; those are never shown to people.
+    const shown = await presentOne(host, e)
+    if (shown.title) hit.title = shown.title
+    if (shown.snippet) hit.snippet = shown.snippet
+    return hit
+  }))
   return hits
+}
+
+const TITLE_MAX = 120
+const SNIPPET_MAX = 160
+
+async function presentOne<M extends string>(host: AssetIndexHost<M>, e: IndexEntry): Promise<{ title?: string; snippet?: string }> {
+  if (!host.present) return {}
+  try {
+    const p = await host.present(e)
+    const title = typeof p?.title === 'string' ? p.title.trim().slice(0, TITLE_MAX).trim() : ''
+    let snippet = typeof p?.snippet === 'string' ? p.snippet.replace(/\s+/g, ' ').trim() : ''
+    if (snippet.length > SNIPPET_MAX) snippet = `${snippet.slice(0, SNIPPET_MAX - 1).trimEnd()}…`
+    return { title: title || undefined, snippet: snippet || undefined }
+  } catch (err) {
+    safeLog(host, `asset-index: present failed for ${e.id}`, err)
+    return {}
+  }
 }
 
 export type IndexOutcome = 'indexed' | 'failed' | 'forgotten'

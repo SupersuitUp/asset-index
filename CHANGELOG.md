@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.2
+
+2026-10-08
+
+- New optional host method `present(entry)`: returns the asset's own `{ title?, snippet? }`. `search`
+  calls it only for the final hits it returns (after visibility), in parallel, each call caught, so a
+  throw or `null` just leaves that hit untitled. `title` is trimmed and capped at 120 characters;
+  `snippet` is whitespace-collapsed and capped at 160, ending in `…` when cut. `SearchHit` gains
+  optional `title` and `snippet`; `assetSearchHandlers` GET returns them as part of the hits.
+- `present` must return the asset's own human-written words, never the AI caption, tags or
+  visibleText. The package never copies those onto a hit.
+- Additive: without `present`, hits are exactly as in 0.1.1.
+
 ## 0.1.1
 
 2026-10-07

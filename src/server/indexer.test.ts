@@ -101,3 +101,60 @@ it('forgetAsset on an unknown id is a no-op', async () => {
   const h = hostWith(fake())
   await expect(forgetAsset(h, 'nope')).resolves.toBeUndefined()
 })
+
+// present: the asset's own words, at query time, for returned hits only.
+const five = () => ['1', '2', '3', '4', '5'].map((i) => asset(i, `beach day ${i}`))
+const indexAll = async (h: ReturnType<typeof hostWith>, xs: AssetInput[]) => { for (const x of xs) await indexAsset(h, x) }
+
+it('present is called only for returned hits, not every ranked candidate', async () => {
+  const xs = five()
+  const calls: string[] = []
+  const h = { ...hostWith(fake(), xs), present: async (e: { id: string }) => { calls.push(e.id); return { title: `T${e.id}` } } }
+  await indexAll(h, xs)
+  const hits = await search(h, 'g', 'beach', 2)
+  expect(hits).toHaveLength(2)
+  expect(calls).toHaveLength(2)
+  expect(hits.map((x) => x.title).sort()).toEqual(calls.map((c) => `T${c}`).sort())
+})
+it('a throwing or null present still returns the hit, untitled', async () => {
+  const xs = five().slice(0, 2)
+  const h = { ...hostWith(fake(), xs), present: async (e: { id: string }) => { if (e.id === '1') throw new Error('boom'); return null } }
+  await indexAll(h, xs)
+  const hits = await search(h, 'g', 'beach')
+  expect(hits.map((x) => x.id).sort()).toEqual(['1', '2'])
+  for (const x of hits) { expect(x).not.toHaveProperty('title'); expect(x).not.toHaveProperty('snippet') }
+})
+it('present title is trimmed and capped at 120; snippet collapses whitespace and ends in an ellipsis when cut', async () => {
+  const xs = [asset('1', 'beach')]
+  const long = 'word '.repeat(80)
+  const h = { ...hostWith(fake(), xs), present: async () => ({ title: `   ${'t'.repeat(200)}  `, snippet: `  ${long}  ` }) }
+  await indexAll(h, xs)
+  const [hit] = await search(h, 'g', 'beach')
+  expect(hit.title).toBe('t'.repeat(120))
+  expect(hit.snippet!.length).toBeLessThanOrEqual(160)
+  expect(hit.snippet!.endsWith('…')).toBe(true)
+  expect(hit.snippet).not.toMatch(/\s{2}/)
+})
+it('snippet collapses whitespace and is left whole when short', async () => {
+  const xs = [asset('1', 'beach')]
+  const h = { ...hostWith(fake(), xs), present: async () => ({ title: ' Poem ', snippet: 'a\n\n  b\t c ' }) }
+  await indexAll(h, xs)
+  const [hit] = await search(h, 'g', 'beach')
+  expect(hit).toMatchObject({ title: 'Poem', snippet: 'a b c' })
+})
+it('without present, hits carry no title fields', async () => {
+  const xs = [asset('1', 'beach')]
+  const h = hostWith(fake(), xs)
+  await indexAll(h, xs)
+  const [hit] = await search(h, 'g', 'beach')
+  expect(hit).not.toHaveProperty('title')
+  expect(hit).not.toHaveProperty('snippet')
+})
+it('the caption, tags and visibleText never appear on a hit, even when present returns nothing', async () => {
+  const xs = [asset('1', 'zebra beach')]
+  const h = { ...hostWith(fake(), xs), present: async () => null }
+  await indexAll(h, xs)
+  const hits = await search(h, 'g', 'beach')
+  expect(JSON.stringify(hits)).not.toContain('zebra')
+  expect(Object.keys(hits[0]).sort()).toEqual(['href', 'id', 'kind', 'score', 'takenAt', 'thumbUrl'])
+})

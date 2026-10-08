@@ -127,3 +127,9 @@ it('every response carries cache-control: no-store', async () => {
   const unauth = await assetSearchHandlers(mk()).GET(get())
   expect(unauth.headers.get('cache-control')).toBe('no-store')
 })
+it('GET passes title and snippet from host.present through in hits', async () => {
+  const h = mk({ member: async () => 'g', present: async () => ({ title: 'Ode', snippet: 'first line' }) })
+  await indexAsset(h, asset('1', 'sunny beach'))
+  const r = await assetSearchHandlers(h).GET(get('?q=beach'))
+  expect((await r.json()).hits[0]).toMatchObject({ id: '1', title: 'Ode', snippet: 'first line' })
+})

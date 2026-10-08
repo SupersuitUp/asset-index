@@ -41,7 +41,10 @@ export interface IndexEntry {
   indexedAt: string
 }
 
-/** What a search returns to a caller. Never carries the caption. */
+/**
+ * What a search returns to a caller. Never carries the caption, tags or visibleText.
+ * `title` and `snippet` exist only when the host's `present` supplied them.
+ */
 export interface SearchHit {
   id: string
   kind: AssetKind
@@ -49,4 +52,8 @@ export interface SearchHit {
   href: string
   thumbUrl: string | null
   score: number
+  /** The asset's own human-written title, from `host.present`; max 120 chars. */
+  title?: string
+  /** A short excerpt of the asset's own words, from `host.present`; max 160 chars. */
+  snippet?: string
 }
