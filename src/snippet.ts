@@ -10,7 +10,7 @@ const collapse = (s: string) => s.replace(/\s+/g, ' ').trim()
 export function matchRanges(s: string, queryTerms: string[]): [number, number][] {
   if (!queryTerms.length) return []
   const out: [number, number][] = []
-  for (const m of s.matchAll(/[\p{L}\p{N}]+/gu)) {
+  for (const m of s.matchAll(/[\p{L}\p{M}\p{N}]+/gu)) {
     const w = m[0].toLowerCase().normalize('NFC')
     if (queryTerms.some((t) => w.startsWith(t))) out.push([m.index!, m.index! + m[0].length])
   }
@@ -20,7 +20,11 @@ export function matchRanges(s: string, queryTerms: string[]): [number, number][]
 /** Cuts a string at `max` code units without splitting a surrogate pair. */
 const safeEnd = (s: string, end: number) => (end > 0 && end < s.length && /[\uDC00-\uDFFF]/.test(s[end]) ? end - 1 : end)
 
-/** At most TEXT_MAX code units (never half a surrogate pair), then NFC, so every range is computed on the string returned. */
+/**
+ * At most TEXT_MAX code units (never half a surrogate pair), then NFC, so every range is computed on
+ * the string returned. The cut comes before NFC on purpose, so the bound holds on what is read; a
+ * combining mark that falls just past the cut is lost from the last character, which is accepted.
+ */
 const prepare = (raw: string) => raw.slice(0, safeEnd(raw, TEXT_MAX)).normalize('NFC')
 
 export function buildTitle(raw: string, queryTerms: string[]): { title: string; matches: [number, number][] } | null {

@@ -87,7 +87,11 @@ export interface AssetIndexHost<M extends string> {
   signing a thumbnail and before calling `present`, and keeps walking down the ranking until it has
   `limit` hits that pass or runs out, so a dropped hit's slot is filled by the next one that passes.
   At most `limit` x 3 candidates are checked per search (a mass of stale entries cannot make one
-  search unbounded), in small parallel batches. A throw, no answer within 1500 ms, or anything but
+  search unbounded), in parallel batches of up to 6. Until a check fails, a batch shrinks to the
+  slots still open, so when every check passes exactly `limit` checks are made; after a failure,
+  batches stay at 6 and any passes beyond `limit` are discarded. All the checks of one search share
+  a 6000 ms budget: when it runs out, the hits that have passed are returned and every candidate
+  still pending or never checked is dropped. A throw, no answer within 1500 ms, or anything but
   `true` counts as false and drops the hit: it fails closed. Answer from the asset's live record,
   never from the entry. It receives a shallow copy of the entry. Without `visibleNow`, search
   behaves exactly as in 0.1.2.
@@ -107,10 +111,11 @@ export interface AssetIndexHost<M extends string> {
   characters. `titleMatches` and `snippetMatches` are `[start, end)` ranges, one per matching word,
   sorted and non-overlapping, as JavaScript string indices (UTF-16 code units, so slice the string
   with them directly) into the returned (normalized) `title` and `snippet`; absent when nothing
-  matched. Words are runs of letters and digits, so text written without spaces (Chinese, Japanese,
-  Thai) is a single run: a query matches it only from the start of the run, and a query word from
-  the middle of a sentence in those scripts does not match by word (it can still be found by
-  meaning).
+  matched. A word is a run of letters, combining marks and digits, so a Thai or Devanagari word
+  stays whole with its vowel signs and viramas. Text written with no spaces between words (Chinese,
+  Japanese, and Thai typed without spaces) is a single run: a query matches it only from the start
+  of the run, and a word from the middle of such a sentence does not match by word (it can still be
+  found by meaning).
   **The package never returns HTML. The UI must escape `title` and `snippet` and wrap only the given
   ranges in `<mark>`.**
   **Hard rule: `present` must return the asset's own human-written words** (a poem's title and
@@ -212,9 +217,12 @@ export const { GET, POST } = assetSearchHandlers(host)
 ```
 
 An existing `visibleNow(hit, who)` that reads only `hit.id` and `hit.href` works unchanged, because
-an `IndexEntry` carries both. A `presentAsset` that re-derived "may everyone the entry names still
-read this" can now ask the narrower question with `ctx.who`, since every hit it sees has already
-passed `visibleNow` for that person. Tests that exercised the wrapper move to the host's
+an `IndexEntry` carries both. When the host implements `visibleNow`, every hit `present` sees has
+already passed it for `ctx.who`, so a `presentAsset` that re-derived "may everyone the entry names
+still read this" can ask the narrower question with `ctx.who` instead. Without `visibleNow` that is
+not true: `present` sees hits filtered only by the stored `visibleTo`. **Narrowing `present` with
+`ctx.who` is not a substitute for `visibleNow`**: `present` returning `null` only removes the words,
+and the hit itself (its id, link, date and signed thumbnail) still goes out. Tests that exercised the wrapper move to the host's
 `visibleNow`; the GET contract (auth, 401, limits, `{ hits }`, `no-store`) is the package's and is
 unchanged.
 

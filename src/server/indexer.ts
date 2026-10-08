@@ -37,14 +37,17 @@ export async function search<M extends string>(host: AssetIndexHost<M>, who: M, 
   ])
   const ranked = fuse([byMeaning, byWord])
   const entries = new Map((await host.store.getMany(ranked.map((r) => r.id))).map((e) => [e.id, e]))
+  // Without visibleNow the scan stops at limit, exactly as before; with it, at the most it may check.
+  const scanTo = host.visibleNow ? limit * LIVE_CAP_FACTOR : limit
   const candidates: IndexEntry[] = []
   for (const r of ranked) {
     const e = entries.get(r.id)
     if (!e || e.status !== 'indexed') continue
     if (e.visibleTo.length && !e.visibleTo.includes(who)) continue
     candidates.push(e)
+    if (candidates.length === scanTo) break
   }
-  const picked = host.visibleNow ? await liveOnly(host, who, candidates, limit) : candidates.slice(0, limit)
+  const picked = host.visibleNow ? await liveOnly(host, who, candidates, limit) : candidates
   const qt = terms(query)
   const score = new Map(ranked.map((r) => [r.id, r.score]))
   const hits: SearchHit[] = await Promise.all(picked.map(async (e) => {
@@ -65,6 +68,8 @@ const HOST_TIMEOUT_MS = 1500
 const LIVE_BATCH = 6
 /** Most candidates checked per search, as a multiple of limit, so a mass of stale entries cannot make one search unbounded. */
 const LIVE_CAP_FACTOR = 3
+/** Total time the live checks of one search may take; after it, what has passed is returned and the rest is dropped. */
+const LIVE_BUDGET_MS = 6000
 
 /** Rejects after ms; the returned clear must always be called. */
 function deadline(ms: number, what: string): { timeout: Promise<never>; clear: () => void } {
@@ -87,21 +92,40 @@ async function checkLive<M extends string>(host: AssetIndexHost<M>, e: IndexEntr
 }
 
 /**
- * Walks the candidates in ranking order, keeping those visibleNow passes, until `limit` are kept or
- * limit x LIVE_CAP_FACTOR have been checked. Each batch is no larger than the slots still open, so
- * when every check passes exactly `limit` are made.
+ * Walks the candidates in ranking order, keeping those visibleNow passes, until `limit` are kept,
+ * limit x LIVE_CAP_FACTOR have been checked, or LIVE_BUDGET_MS has run out. Until a check fails, a
+ * batch is no larger than the slots still open, so when every check passes exactly `limit` are made;
+ * after any failure, batches stay at LIVE_BATCH so a run of stale entries is not checked one at a
+ * time. Passes beyond `limit` are trimmed. When the budget runs out, checks still pending (and every
+ * candidate never checked) count as failed: fail closed.
  */
 async function liveOnly<M extends string>(host: AssetIndexHost<M>, who: M, candidates: IndexEntry[], limit: number): Promise<IndexEntry[]> {
   const cap = Math.min(candidates.length, limit * LIVE_CAP_FACTOR)
-  const kept: IndexEntry[] = []
-  let next = 0
-  while (kept.length < limit && next < cap) {
-    const batch = candidates.slice(next, next + Math.min(LIVE_BATCH, limit - kept.length, cap - next))
-    next += batch.length
-    const pass = await Promise.all(batch.map((e) => checkLive(host, e, who)))
-    batch.forEach((e, i) => { if (pass[i] && kept.length < limit) kept.push(e) })
+  const passed: boolean[] = []
+  let expired = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const budget = new Promise<void>((res) => { timer = setTimeout(() => { expired = true; res() }, LIVE_BUDGET_MS) })
+  try {
+    let next = 0, kept = 0, anyFailed = false
+    while (kept < limit && next < cap) {
+      const size = Math.min(anyFailed ? LIVE_BATCH : Math.min(LIVE_BATCH, limit - kept), cap - next)
+      const from = next
+      next += size
+      const batch = Promise.all(candidates.slice(from, next).map((e, i) => checkLive(host, e, who).then((ok) => {
+        // An answer that lands after the budget is ignored: the search has already answered.
+        if (ok && !expired) passed[from + i] = true
+        return ok
+      })))
+      await Promise.race([batch, budget])
+      if (expired) break
+      const answers = await batch
+      kept += answers.filter(Boolean).length
+      if (answers.some((ok) => !ok)) anyFailed = true
+    }
+  } finally {
+    clearTimeout(timer)
   }
-  return kept
+  return candidates.slice(0, cap).filter((_, i) => passed[i]).slice(0, limit)
 }
 
 async function presentOne<M extends string>(host: AssetIndexHost<M>, e: IndexEntry, who: M, qt: string[]): Promise<Partial<Pick<SearchHit, 'title' | 'titleMatches' | 'snippet' | 'snippetMatches'>>> {

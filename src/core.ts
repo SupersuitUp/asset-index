@@ -4,14 +4,15 @@ const STOP = new Set(['the','a','an','and','or','of','at','in','on','to','with',
 
 /**
  * Lowercased unique words, NFC-normalized so a query typed in decomposed form (e + combining accent)
- * matches text stored precomposed. Splits on anything that is not a letter or digit, so scripts
- * written without spaces (CJK, Thai) come out as whole runs, not words.
+ * matches text stored precomposed. A word is a run of letters, combining marks and digits, so Thai
+ * and Devanagari words keep their vowel signs and viramas. CJK, written without spaces, comes out
+ * as whole runs. Length is counted in code points, so one astral character is one character.
  */
 export function terms(...parts: string[]): string[] {
   const out = new Set<string>()
   for (const part of parts) {
-    for (const w of part.toLowerCase().normalize('NFC').split(/[^\p{L}\p{N}]+/u)) {
-      if (w.length < 2 || STOP.has(w)) continue
+    for (const w of part.toLowerCase().normalize('NFC').split(/[^\p{L}\p{M}\p{N}]+/u)) {
+      if ([...w].length < 2 || STOP.has(w)) continue
       out.add(w)
       if (out.size === 200) return [...out]
     }

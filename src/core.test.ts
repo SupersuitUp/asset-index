@@ -45,7 +45,14 @@ describe('terms normalization', () => {
     expect(terms('Café')).toEqual(terms('Café'))
     expect(terms('Café')).toEqual(['café'])
   })
-  it('keeps CJK and Thai runs whole, since they are written without spaces', () => {
-    expect(terms('東京の海 ทะเลสวย')).toEqual(['東京の海', 'ทะเลสวย'])
+  it('keeps Thai and Devanagari words whole across their combining marks', () => {
+    expect(terms('ที่นี่ ทะเลสวยมาก')).toEqual(['ที่นี่', 'ทะเลสวยมาก'])
+    expect(terms('नमस्ते दुनिया')).toEqual(['नमस्ते', 'दुनिया'])
+  })
+  it('keeps CJK runs whole, since they are written without spaces', () => {
+    expect(terms('東京の海')).toEqual(['東京の海'])
+  })
+  it('counts length in code points: one astral letter is too short, two are a word', () => {
+    expect(terms('𝒜 𝒜𝒞 bc')).toEqual(['𝒜𝒞', 'bc'])
   })
 })

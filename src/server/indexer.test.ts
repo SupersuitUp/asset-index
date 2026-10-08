@@ -1,4 +1,4 @@
-import { it, expect } from 'vitest'
+import { it, expect, vi } from 'vitest'
 import { indexAsset, forgetAsset, search, sweep } from './indexer.js'
 import { memoryStore } from './memory-store.js'
 import type { Model } from './model.js'
@@ -413,4 +413,64 @@ it('an astral character at the cut is never split, in the title, the snippet or 
   expect(hit2.snippet!.endsWith('beach q')).toBe(true)
   expect(hit2.snippet!).not.toMatch(lone)
   expect(hit2.snippetMatches!.map(([s, e]) => hit2.snippet!.slice(s, e))).toEqual(['beach'])
+})
+
+it('Thai and Devanagari words with combining marks are matched and highlighted whole, as one range each', async () => {
+  const xs = [asset('1', 'ที่นี่ नमस्ते')]
+  const text = 'ที่นี่ ทะเลสวยมาก और नमस्ते दुनिया'
+  const h = { ...hostWith(fake(), xs), present: async () => ({ title: 'नमस्ते', text }) }
+  await indexAll(h, xs)
+  expect(await h.store.byTerms(terms('ที่นี่'), 10)).toEqual(['1'])
+  expect(await h.store.byTerms(terms('नमस्ते'), 10)).toEqual(['1'])
+  const [thai] = await search(h, 'g', 'ที่นี่')
+  expect(thai.snippetMatches!.map(([s, e]) => thai.snippet!.slice(s, e))).toEqual(['ที่นี่'])
+  const [dev] = await search(h, 'g', 'नमस्ते')
+  expect(dev.snippetMatches!.map(([s, e]) => dev.snippet!.slice(s, e))).toEqual(['नमस्ते'])
+  expect(dev.titleMatches).toEqual([[0, 'नमस्ते'.length]])
+})
+it('after a failed check, batches stay full rather than shrinking to the open slots, and surplus passes are trimmed', async () => {
+  const xs = thumbed(6)
+  const order = await baseline(xs, 6)
+  let live = 0, calls = 0
+  const peaks: number[] = []
+  const h = {
+    ...hostWith(fake(), xs),
+    visibleNow: async (e: IndexEntry) => {
+      calls++; live++; peaks.push(live)
+      await new Promise((r) => setTimeout(r, 2))
+      live--
+      return e.id !== order[0]
+    },
+  }
+  await indexAll(h, xs)
+  const hits = await search(h, 'g', 'beach', 2)
+  // Batch 1 is [order[0] fails, order[1] passes]; batch 2 checks the 4 left at once, not 1.
+  expect(calls).toBe(6)
+  expect(Math.max(...peaks)).toBe(4)
+  expect(hits.map((x) => x.id)).toEqual([order[1], order[2]])
+})
+it('live checks stop at a 6000 ms budget: what passed is returned, the rest is dropped', async () => {
+  const xs = thumbed(30)
+  const order = await baseline(xs, 30)
+  let calls = 0
+  const h = {
+    ...hostWith(fake(), xs),
+    visibleNow: (e: IndexEntry) => { calls++; return e.id === order[0] ? Promise.resolve(true) : new Promise<boolean>(() => {}) },
+  }
+  await indexAll(h, xs)
+  vi.useFakeTimers()
+  try {
+    let done = false
+    const p = search(h, 'g', 'beach', 10).then((r) => { done = true; return r })
+    await vi.advanceTimersByTimeAsync(5999)
+    expect(done).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(done).toBe(true)
+    const hits = await p
+    expect(hits.map((x) => x.id)).toEqual([order[0]])
+    // Without the budget, 30 hanging checks in batches of 6 take 7500 ms; it stopped after 4 batches.
+    expect(calls).toBe(24)
+  } finally {
+    vi.useRealTimers()
+  }
 })

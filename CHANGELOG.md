@@ -7,8 +7,10 @@
 - New optional host method `visibleNow(entry, who)`: the live check. `search` calls it for each
   ranked candidate, in ranking order, before signing a thumbnail and before `present`, and keeps
   going down the ranking until it has `limit` passing hits or runs out, so a dropped hit's slot is
-  filled. At most `limit` x 3 candidates are checked per search, in parallel batches of up to 6. A
-  throw, a timeout (1500 ms) or any answer but `true` drops the hit (fail closed). Without it,
+  filled. At most `limit` x 3 candidates are checked per search, in parallel batches of up to 6
+  (shrunk to the open slots only until a check fails), within a 6000 ms budget for the whole search,
+  after which what passed is returned and the rest dropped. A throw, a timeout (1500 ms) or any
+  answer but `true` drops the hit (fail closed). Without it,
   search is exactly as in 0.1.2. This replaces the `liveSearchGET` wrapper three host apps wrote
   around `GET`; the README shows how to delete one.
 - `present` gains a second argument, `ctx: { who }`, the person the search is answered for. It
@@ -22,7 +24,12 @@
   Entries indexed from decomposed text before this keep their old terms until re-indexed; nearly
   all text is already NFC.
 - `assetSearchHandlers` GET: no contract change; it gets the live check through `search`.
-- README: CJK and Thai text match as whole runs.
+- Words now include combining marks (`[\p{L}\p{M}\p{N}]`) in `terms()` and in highlight matching,
+  and the two-character minimum counts code points. Before, Thai and Devanagari were split at every
+  vowel sign or virama (नमस्ते became `नमस` and `त`). Entries indexed before 0.1.3 from text in
+  scripts with combining marks should be re-indexed (a backfill sweep) to match by word; meaning
+  search is unaffected.
+- README: text with no spaces between words (CJK) matches as whole runs.
 
 ## 0.1.2
 
