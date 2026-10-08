@@ -62,3 +62,27 @@ it('sweep without backfill retries only failed entries', async () => {
   h.model = fake()
   expect(await sweep(h, { cursor: null, limit: 10, backfill: false })).toMatchObject({ indexed: 1, failed: 0 })
 })
+it('a failed entry whose asset is gone is deleted by the sweep, in both modes', async () => {
+  for (const backfill of [false, true]) {
+    const h = hostWith(fake(true), [asset('1', 'x')])
+    await indexAsset(h, asset('1', 'x'))
+    const gone = { ...h, load: async () => null, listAll: async () => ({ ids: ['1'], next: null }) }
+    expect(await sweep(gone, { cursor: null, limit: 10, backfill })).toMatchObject({ skipped: 1 })
+    expect(await h.store.get('1')).toBeNull()
+    expect(await h.store.failed(10)).toEqual([])
+  }
+})
+it('with limit 1 and two failing entries, the second retry sweep picks the other one', async () => {
+  const all = [asset('1', 'a'), asset('2', 'b')]
+  const h = hostWith(fake(true), all)
+  await indexAsset(h, all[0])
+  await new Promise((r) => setTimeout(r, 5))
+  await indexAsset(h, all[1])
+  await new Promise((r) => setTimeout(r, 5))
+  const seen: string[] = []
+  const spy = { ...h, load: async (id: string) => { seen.push(id); return all.find((a) => a.id === id) ?? null } }
+  await sweep(spy, { cursor: null, limit: 1, backfill: false })
+  await new Promise((r) => setTimeout(r, 5))
+  await sweep(spy, { cursor: null, limit: 1, backfill: false })
+  expect(seen).toEqual(['1', '2'])
+})

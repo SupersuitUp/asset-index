@@ -62,3 +62,13 @@ it('get returns null for a missing id and stores copies', async () => {
   expect(await s.get('nope')).toBeNull()
   expect(s.all().map((x) => x.id)).toEqual(['a'])
 })
+
+it('failed returns the oldest indexedAt first and delete removes an entry', async () => {
+  const s = memoryStore()
+  await s.put({ ...e('new', [0, 0], []), status: 'failed', embedding: null, indexedAt: '2026-10-02T00:00:00Z' })
+  await s.put({ ...e('old', [0, 0], []), status: 'failed', embedding: null, indexedAt: '2026-10-01T00:00:00Z' })
+  expect((await s.failed(10)).map((x) => x.id)).toEqual(['old', 'new'])
+  await s.delete('old')
+  expect(await s.get('old')).toBeNull()
+  expect((await s.failed(10)).map((x) => x.id)).toEqual(['new'])
+})

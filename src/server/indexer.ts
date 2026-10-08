@@ -31,14 +31,19 @@ export async function search<M extends string>(host: AssetIndexHost<M>, who: M, 
   ])
   const ranked = fuse([byMeaning, byWord])
   const entries = new Map((await host.store.getMany(ranked.map((r) => r.id))).map((e) => [e.id, e]))
-  const hits: SearchHit[] = []
+  const picked: IndexEntry[] = []
   for (const r of ranked) {
     const e = entries.get(r.id)
     if (!e || e.status !== 'indexed') continue
     if (e.visibleTo.length && !e.visibleTo.includes(who)) continue
-    hits.push({ id: e.id, kind: e.kind, takenAt: e.takenAt, href: e.href, thumbUrl: e.thumbPath ? await host.signedUrl(e.thumbPath) : null, score: r.score })
-    if (hits.length === limit) break
+    picked.push(e)
+    if (picked.length === limit) break
   }
+  const score = new Map(ranked.map((r) => [r.id, r.score]))
+  const hits: SearchHit[] = await Promise.all(picked.map(async (e) => ({
+    id: e.id, kind: e.kind, takenAt: e.takenAt, href: e.href,
+    thumbUrl: e.thumbPath ? await host.signedUrl(e.thumbPath) : null, score: score.get(e.id)!,
+  })))
   return hits
 }
 
@@ -46,7 +51,7 @@ export async function sweep<M extends string>(host: AssetIndexHost<M>, opts: { c
   let indexed = 0, failed = 0, skipped = 0
   const run = async (id: string) => {
     const a = await host.load(id)
-    if (!a) { skipped++; return }
+    if (!a) { await host.store.delete(id); skipped++; return }
     const e = await indexAsset(host, a)
     if (e.status === 'indexed') indexed++; else failed++
   }

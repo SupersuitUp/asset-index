@@ -41,8 +41,9 @@ export function memoryStore(): IndexStore & { all(): IndexEntry[] } {
       return ids.flatMap((id) => { const e = rows.get(id); return e ? [copy(e)] : [] })
     },
     async failed(limit) {
-      return [...rows.values()].filter((e) => e.status === 'failed').slice(0, limit).map(copy)
+      return [...rows.values()].filter((e) => e.status === 'failed').sort((a, b) => (a.indexedAt < b.indexedAt ? -1 : a.indexedAt > b.indexedAt ? 1 : 0)).slice(0, limit).map(copy)
     },
+    async delete(id) { rows.delete(id) },
     all() { return [...rows.values()].map(copy) },
   }
 }
